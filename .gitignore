@@ -1,0 +1,9 @@
+# 数据与产物（不入库）
+data/
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+*.log
+*.bak
