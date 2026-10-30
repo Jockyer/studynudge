@@ -240,8 +240,6 @@ class App:
         wrap.pack(fill="both", expand=True, padx=(6, 0), pady=(4, 0))
         self.canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.sbar = tk.Canvas(wrap, width=7, bg=BG, highlightthickness=0, bd=0)
-        self.sbar.pack(side="right", fill="y", padx=(0, 1))
         self.inner = tk.Frame(self.canvas, bg=BG)
         self.inner_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", lambda e: self._apply_scroll())
@@ -651,19 +649,22 @@ class App:
             pass
 
     def _draw_thumb(self) -> None:
-        """右侧只留一个胶囊滑块，没有滚动条槽。"""
+        """右侧只有一个胶囊滑块，直接画在列表 canvas 上（无轨道、不遮背景）。"""
         try:
-            self.sbar.delete("all")
-            vh = self.canvas.winfo_height()
+            c = self.canvas
+            c.delete("thumb")
+            vh = c.winfo_height()
             ch = self.inner.winfo_reqheight()
-            if ch <= vh + 2 or vh < 30:
+            if ch <= vh + 2 or vh < 40:
                 return
-            h = max(26, int(vh * vh / ch))
+            h = max(28, int(vh * vh / ch))
             mx = max(1, ch - vh)
             pos = max(0.0, min(1.0, self._sy / mx))
             y = int((vh - h) * pos)
-            self.sbar.create_line(3.5, y + 5, 3.5, y + h - 5,
-                                  width=4, capstyle="round", fill=ACCENT)
+            x = c.winfo_width() - 4
+            c.create_line(x, y + 6, x, y + h - 6, width=4,
+                          capstyle="round", fill=ACCENT, tags="thumb")
+            c.tag_raise("thumb")
         except Exception:
             pass
 
@@ -724,15 +725,20 @@ class App:
                 cv._ph0 = ph0
                 cv.itemconfigure(cv._bg0, image=ph0)
 
-                card = src.crop((0, y0, min(ww, src.width), y1))
-                if card.size != (ww, hh):
-                    card = card.resize((ww, hh))
-                mask = masks.get((ww, hh))
+                gap = getattr(cv, "_GAP", 5)
+                mx = getattr(cv, "_MX", 6)
+                cw = max(40, getattr(cv, "_CW", ww - mx * 2))
+                ch = max(8, hh - gap * 2)
+                cy0 = max(0, min(src.height - 1, y0 + gap))
+                card = src.crop((mx, cy0, min(mx + cw, src.width), cy0 + ch))
+                if card.size != (cw, ch):
+                    card = card.resize((cw, ch))
+                mask = masks.get((cw, ch))
                 if mask is None:
-                    mask = Image.new("L", (ww, hh), 0)
+                    mask = Image.new("L", (cw, ch), 0)
                     ImageDraw.Draw(mask).rounded_rectangle(
-                        [0, 0, ww - 1, hh - 1], radius=10, fill=255)
-                    masks[(ww, hh)] = mask
+                        [0, 0, cw - 1, ch - 1], radius=10, fill=255)
+                    masks[(cw, ch)] = mask
                 card = card.convert("RGBA")
                 card.putalpha(mask)
                 ph1 = ImageTk.PhotoImage(card)
@@ -793,7 +799,7 @@ class App:
         return "  ·  ".join(bits)
 
     def _row(self, t: dict, done: bool, day=None) -> None:
-        """一行 = 圆角半透明卡片：第一行标题 + 操作，第二行状态与元信息。"""
+        """一行 = 圆角半透明卡片；行高含上下间隙，间隙里也铺背景图（消除深色缝）。"""
         day = day or self.view_day
         _name, color = st.LINES.get(t.get("line"), st.LINES["other"])
         step = int(t.get("step") or 0)
@@ -814,39 +820,49 @@ class App:
 
         ft = tkfont.Font(font=(FONT, 11 + SZ, "overstrike" if done else "normal"))
         fm = tkfont.Font(font=(FONT, 8 + SZ))
-        W = max(240, (self.canvas.winfo_width() or 380) - 18)
-        tw = max(80, W - 58 - 112)
+        W = max(240, (self.canvas.winfo_width() or 380) - 2)   # 画布宽（铺满）
+        MX = 6                                                  # 卡片左右内缩
+        CW = W - MX * 2
+        tw = max(80, CW - 58 - 96)
         title = self._fit_text(self._title_for(t, day), ft, tw)
-        meta = self._fit_text(self._meta_text(t, done, day), fm, tw)   # 单行截断，避免被卡片底边裁掉
+        meta = self._fit_text(self._meta_text(t, done, day), fm, tw)
         th_ = ft.metrics("linespace")
         mh = fm.metrics("linespace")
-        H = 13 + th_ + 3 + mh + 12
 
-        cv = tk.Canvas(self.inner, height=H, bg=BG2, highlightthickness=0, bd=0, takefocus=0)
-        cv.pack(fill="x", pady=5, padx=(6, 10))
+        GAP = 5
+        H = 13 + th_ + 3 + mh + 12          # 卡片本体
+        CH = H + GAP * 2                     # 行画布（含上下间隙）
+        cv = tk.Canvas(self.inner, height=CH, bg=BG, highlightthickness=0, bd=0, takefocus=0)
+        cv.pack(fill="x", padx=0)
+        cv._H, cv._GAP, cv._MX, cv._CW = H, GAP, MX, CW
         cv._base, cv._edge, cv._deferred, cv._task = base, edge, deferred, t
         self._row_cvs.append(cv)
         if running:
             self._timer_cv = cv
 
-        cv._bg0 = cv.create_image(0, 0, anchor="nw", tags="bgbg")
-        cv._bg1 = cv.create_image(0, 0, anchor="nw", tags="card")
-        cv.create_polygon(_rr(1, 1, W - 1, H - 1, 10), smooth=True, fill="", outline=edge)
-        cv.create_line(11, 15, 11, H - 15, fill=color, width=3, capstyle="round")
+        cv._bg0 = cv.create_image(0, 0, anchor="nw", tags="bgbg")            # 整块（铺满，含间隙）
+        cv._bg1 = cv.create_image(MX, GAP, anchor="nw", tags="card")         # 卡片（内缩）
+        cv.create_line(MX + 5, GAP + 15, MX + 5, GAP + H - 15,
+                       fill=color, width=3, capstyle="round")
 
-        cy = H // 2
-        cx = 33
-        cv._cb = cv.create_oval(cx - 8, cy - 8, cx + 8, cy + 8,
-                                outline=(OK if done else (DANGER if (od or deferred)
-                                                          else th.mix(FG, BG2, 0.5))),
-                                width=2, fill=(OK if done else ""))
+        # 勾选框：圆角方框（有填充，内部可点）
+        bs = 19
+        bx0 = MX + 18
+        by0 = GAP + (H - bs) // 2
+        cv._cb = cv.create_polygon(_rr(bx0, by0, bx0 + bs, by0 + bs, 5), smooth=True,
+                                   fill=(OK if done else th.mix(BG2, FG, 0.10)),
+                                   outline=(OK if done else th.mix(FG, BG2, 0.45)),
+                                   width=2)
         if done:
-            cv.create_line(cx - 4, cy, cx - 1, cy + 4, cx + 5, cy - 4, fill="#FFFFFF", width=2)
-        ti = cv.create_text(55, 13, anchor="nw", text=title, width=tw,
+            cv.create_line(bx0 + 4, by0 + 9, bx0 + 8, by0 + 14, bx0 + 15, by0 + 4,
+                           fill="#FFFFFF", width=2)
+        ti = cv.create_text(MX + 50, GAP + 13, anchor="nw", text=title, width=tw,
                             fill=(th.mix(FG, BG2, 0.45) if done else FG), font=ft, justify="left")
-        cv._meta_id = cv.create_text(55, 13 + th_ + 4, anchor="nw", text=meta, width=tw,
+        cv._meta_id = cv.create_text(MX + 50, GAP + 13 + th_ + 4, anchor="nw", text=meta, width=tw,
                                      fill=(DANGER if (od or deferred) else th.mix(FG, BG2, 0.42)),
                                      font=fm, justify="left")
+
+        cy = GAP + H // 2
 
         def chip(x, label, fg, cmd, size=15):
             bgc = th.mix(BG2, fg, 0.16)
@@ -860,12 +876,11 @@ class App:
                     _r, fill=th.mix(BG2, fg, 0.36)))
                 cv.tag_bind(i, "<Leave>", lambda e, _r=rect: cv.itemconfigure(_r, fill=bgc))
 
-        chip(W - 20, "⋮", th.mix(FG, BG2, 0.25), lambda: self._more_menu(t, cv), size=14)
+        chip(MX + CW - 22, "⋮", th.mix(FG, BG2, 0.25), lambda: self._more_menu(t, cv), size=14)
         if not done:
-            chip(W - 54, "■" if running else "▶",
+            chip(MX + CW - 60, "■" if running else "▶",
                  (DANGER if running else th.mix(FG, BG2, 0.2)),
                  lambda: self.toggle_timer(t), size=15)
-            chip(W - 88, "延", "#E0A030", lambda: self._defer_menu(t, cv), size=13)
 
         for i in (cv._cb, ti):
             cv.tag_bind(i, "<Button-1>", lambda e, tt=t: self.toggle(tt))
@@ -939,9 +954,7 @@ class App:
         x, y = self._menu_at(cv)
         self._popup([
             ("编辑任务", lambda: self.edit_task(t), None),
-            ("延期到明天", lambda: self._defer_to(t, 1), None),
-            ("延期到后天", lambda: self._defer_to(t, 2), None),
-            ("延期到下周", lambda: self._defer_to(t, 7), None),
+            ("延期…", lambda: self._defer_menu(t, cv), None),
             ("删除任务", lambda: self._delete_task(t), DANGER),
         ], x, y)
 
@@ -1531,7 +1544,17 @@ class App:
             if c2 is not None:
                 cw = max(200, c2.winfo_width() or w)
                 ch = max(200, c2.winfo_height() or h)
-                self._bg_img2 = ImageTk.PhotoImage(th.compose_bg(photo, (cw, ch), accent, alpha))
+                # 用同一张窗口背景图裁出列表区那一条，保证与外面完全对齐
+                cy = 0
+                try:
+                    cy = max(0, c2.winfo_rooty() - self.root.winfo_rooty())
+                except Exception:
+                    cy = 0
+                y0 = min(cy, max(0, img.height - 1))
+                crop = img.crop((0, y0, min(cw, img.width), min(y0 + ch, img.height)))
+                if crop.size != (cw, ch):
+                    crop = crop.resize((cw, ch))
+                self._bg_img2 = ImageTk.PhotoImage(crop)
                 c2.delete("bgimg")
                 c2.create_image(0, 0, anchor="nw", image=self._bg_img2, tags="bgimg")
                 c2.tag_lower("bgimg")
@@ -1817,25 +1840,25 @@ class App:
         wrap = tk.Frame(pad, bg=BG)
         wrap.pack(fill="both", expand=True)
         canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0, bd=0)
-        sbar = tk.Canvas(wrap, width=7, bg=BG, highlightthickness=0, bd=0)
         body = tk.Frame(canvas, bg=BG)
         bid = canvas.create_window((0, 0), window=body, anchor="nw")
         def _sync(first, last):
             try:
-                sbar.delete("all")
-                vh = sbar.winfo_height()
+                canvas.delete("thumb")
+                vh = canvas.winfo_height()
                 f, l = float(first), float(last)
                 if l - f >= 0.999 or vh < 30:
                     return
                 h = max(24, int(vh * (l - f)))
                 y = int((vh - h) * (f / max(1e-6, 1 - (l - f))))
-                sbar.create_line(3.5, y + 4, 3.5, y + h - 4, width=4,
-                                 capstyle="round", fill=ACCENT)
+                canvas.create_line(canvas.winfo_width() - 4, y + 6,
+                                   canvas.winfo_width() - 4, y + h - 6,
+                                   width=4, capstyle="round", fill=ACCENT, tags="thumb")
+                canvas.tag_raise("thumb")
             except Exception:
                 pass
         canvas.configure(yscrollcommand=_sync)
         canvas.pack(side="left", fill="both", expand=True)
-        sbar.pack(side="right", fill="y")
         d.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
         body.bind("<Configure>",
                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
