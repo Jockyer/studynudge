@@ -30,6 +30,9 @@ LINES = {
     "reading": ("阅读", "#E8A33D"),
     "other": ("其他", "#9AA0A8"),
 }
+
+# 学科可由用户在设置里增删改（key / 名称 / 颜色），默认取上面的 LINES
+DEFAULT_SUBJECTS = [{"key": k, "name": v[0], "color": v[1]} for k, v in LINES.items()]
 LINE_ORDER = {"math": 0, "graphics": 1, "english": 2, "reading": 3, "other": 4}
 
 # 学期内周模板（rev2）：图形学12h + 数学12h + 英语2h + 阅读2h
@@ -64,6 +67,7 @@ DEFAULT_SETTINGS = {
     "progress_mtime": 0.0,   # 上次同步时进度.md 的修改时间
     "progress_sync_at": "",  # 上次同步时间
     "progress_updated": "",  # 进度.md 自称的「最近更新」日期
+    "subjects": None,          # 学科清单（None = 用 DEFAULT_SUBJECTS）
     "stale_warned": "",      # 最后一天提醒过“进度.md 太久没更新”
     "dnd_fullscreen": True,   # 全屏游戏/视频时勿扰（不弹提醒，只记日志）
     "theme_accent": "#4A90D9",  # 主题色（影响强调色与界面色调）
@@ -425,6 +429,35 @@ class Store:
         self.settings["seed_version"] = SEED_VERSION
         self.save()
         return True
+
+
+    # ---------------------------------------------------------------- 学科
+    @property
+    def subjects(self) -> dict:
+        """{key: (名称, 颜色)}，来自设置，缺省用内置。"""
+        out = {}
+        raw = self.settings.get("subjects")
+        if not isinstance(raw, list) or not raw:
+            raw = DEFAULT_SUBJECTS
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            k = str(s.get("key") or "").strip()
+            if not k:
+                continue
+            out[k] = (str(s.get("name") or k), str(s.get("color") or "#9AA0A8"))
+        if "other" not in out:
+            out["other"] = LINES["other"]
+        return out
+
+    def subject(self, key: str):
+        """(名称, 颜色)；未知学科用 key 当名称、灰色。"""
+        k = str(key or "").strip()
+        return self.subjects.get(k, (k or "其他", "#9AA0A8"))
+
+    def save_subjects(self, items: list) -> None:
+        self.settings["subjects"] = items
+        self.save()
 
     def save(self) -> None:
         """原子写：临时文件 + os.replace，旧文件留 .bak 兜底。"""

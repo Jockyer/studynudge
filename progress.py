@@ -82,8 +82,30 @@ def _section(lines: list[str], keys=SECTION_KEYS) -> list[str] | None:
     return None
 
 
-def _line_of(tag: str) -> str:
-    t = tag.strip().lower()
+
+def _alias_of(store) -> dict:
+    """自定义学科的名称/键 → key，供解析使用。"""
+    out = {}
+    try:
+        for k, (name, _c) in store.subjects.items():
+            out[k] = k
+            if name:
+                out[name] = k
+    except Exception:
+        pass
+    return out
+
+
+def _line_of(tag: str, extra: dict | None = None) -> str:
+    """把 [数学] / [math] / 自定义名称 映射成学科 key。"""
+    raw = tag.strip()
+    t = raw.lower()
+    if extra:
+        for name, key in extra.items():
+            if name and (name.lower() == t or name == raw):
+                return key
+        if t in extra:
+            return extra[t]
     for k, v in LINE_ALIAS.items():
         if k in t:
             return v
@@ -158,7 +180,7 @@ def _start_of(sched: str) -> str:
 
 
 # ---------------------------------------------------------------- 解析
-def parse(text: str) -> dict:
+def parse(text: str, alias: dict | None = None) -> dict:
     """解析进度.md，返回 {ok, source, items, updated, week, note}。"""
     out = {"ok": False, "source": "", "items": [], "updated": None,
            "week": None, "note": ""}
@@ -186,7 +208,7 @@ def parse(text: str) -> dict:
                 continue
             key_raw = mm.group("key").strip()
             key, _, sub = key_raw.partition("#")
-            line = _line_of(key)
+            line = _line_of(key, alias)
             pkey = line + ("#" + sub.strip() if sub.strip() else "")
             parts = [p.strip() for p in mm.group("rest").split("|")]
             title = parts[0]
@@ -234,11 +256,11 @@ def parse(text: str) -> dict:
     return out
 
 
-def parse_file(path: str | os.PathLike) -> dict:
+def parse_file(path: str | os.PathLike, alias: dict | None = None) -> dict:
     p = Path(path) if str(path or "").strip() else (st.paths.data_dir() / "任务列表.md")
     if not p.exists():
         ensure_file(p)          # 首次运行自动生成模板
-    r = parse(read_doc(p))
+    r = parse(read_doc(p), alias)
     try:
         r["mtime"] = p.stat().st_mtime
     except Exception:
@@ -260,7 +282,7 @@ def sync(store: "st.Store", path: str | os.PathLike | None = None,
     """按进度.md 重建任务：更新同名 pkey、删掉消失的、清掉旧静态种子。"""
     day = day or st.today()
     p = Path(path or store.settings.get("progress_md") or "")
-    parsed = parse_file(p)
+    parsed = parse_file(p, _alias_of(store))
     rep = {"ok": False, "msg": parsed.get("note") or "", "added": 0, "updated": 0,
            "removed": 0, "archived": 0, "total": 0, "source": parsed.get("source"),
            "parsed": parsed}

@@ -775,7 +775,7 @@ class App:
 
     def _meta_text(self, t: dict, done: bool, day=None) -> str:
         day = day or self.view_day
-        name = st.LINES.get(t.get("line"), st.LINES["other"])[0]
+        name = self.store.subject(t.get("line"))[0]
         od = st.overdue_days(t)
         running = st.timer_running(t)
         deferred = (not done) and st.is_deferred(t, day)
@@ -801,7 +801,7 @@ class App:
     def _row(self, t: dict, done: bool, day=None) -> None:
         """一行 = 圆角半透明卡片；行高含上下间隙，间隙里也铺背景图（消除深色缝）。"""
         day = day or self.view_day
-        _name, color = st.LINES.get(t.get("line"), st.LINES["other"])
+        _name, color = self.store.subject(t.get("line"))
         step = int(t.get("step") or 0)
         od = st.overdue_days(t)
         deferred = (not done) and st.is_deferred(t, day)
@@ -897,7 +897,6 @@ class App:
         d.overrideredirect(True)
         d.configure(bg=th.mix(BG2, FG, 0.22))
         d.attributes("-topmost", True)
-        d.geometry(f"{width}x{len(items) * 30 + 8}+{x}+{y}")
         box = tk.Frame(d, bg=BG2)
         box.pack(fill="both", expand=True, padx=1, pady=1)
 
@@ -912,6 +911,16 @@ class App:
             b.bind("<Enter>", lambda e, w=b: w.configure(bg=th.mix(BG2, FG, 0.10)))
             b.bind("<Leave>", lambda e, w=b: w.configure(bg=BG2))
             b.bind("<Button-1>", lambda e, c=cmd: pick(c))
+        # 按实际内容定尺寸（之前固定 30px/项，字体一大就把最后一项裁掉）
+        try:
+            d.update_idletasks()
+            w = max(width, box.winfo_reqwidth() + 2)
+            h = box.winfo_reqheight() + 2
+            sw = d.winfo_screenwidth()
+            x = max(4, min(x, sw - w - 8))
+            d.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            d.geometry(f"{width}x{len(items) * 34 + 8}+{x}+{y}")
         d.bind("<FocusOut>", lambda e: d.destroy())
         d.bind("<Escape>", lambda e: d.destroy())
         try:
@@ -1350,7 +1359,7 @@ class App:
         d = self._dlg("编辑任务" if task else "新增任务", 420, 370)
         pad = tk.Frame(d, bg=BG, padx=14, pady=12)
         pad.pack(fill="both", expand=True)
-        names = {k: v[0] for k, v in st.LINES.items()}
+        names = {k: v[0] for k, v in self.store.subjects.items()}
         keys = {v: k for k, v in names.items()}
 
         e_title = tk.Entry(pad, bg=BG3, fg=FG, insertbackground=FG, bd=0,
@@ -1663,6 +1672,89 @@ class App:
         tk.Button(pad, text="关闭", bg=ACCENT, fg="#FFFFFF", bd=0, padx=18, pady=6,
                   cursor="hand2", command=d.destroy).pack(side="right", pady=(14, 0))
 
+    def subjects_dialog(self) -> None:
+        """学科类型与学科线颜色：可增、删、改名、改色。"""
+        d = self._dlg("学科与颜色", 520, 420)
+        pad = tk.Frame(d, bg=BG)
+        pad.pack(fill="both", expand=True, padx=14, pady=12)
+
+        tk.Label(pad, text="学科（任务表里写 [key]，界面上显示名称与颜色）", bg=BG, fg=FG,
+                 anchor="w", font=(FONT, 10 + SZ, "bold")).pack(fill="x", pady=(0, 8))
+
+        box = tk.Frame(pad, bg=BG)
+        box.pack(fill="both", expand=True)
+        rows = []
+
+        def add_row(key="", name="", color="#9AA0A8"):
+            f = tk.Frame(box, bg=BG)
+            f.pack(fill="x", pady=3)
+            sw = tk.Button(f, text="", bg=color, activebackground=color, bd=0,
+                           width=3, cursor="hand2")
+            sw.pack(side="left", padx=(0, 8))
+            tk.Label(f, text="key", bg=BG, fg=DIM, font=(FONT, 8 + SZ)).pack(side="left")
+            vk = tk.StringVar(value=key)
+            ek = tk.Entry(f, textvariable=vk, width=10, bg=BG3, fg=FG, bd=0,
+                          insertbackground=FG, font=(FONT, 9 + SZ), highlightthickness=0)
+            ek.pack(side="left", padx=(4, 10), ipady=3)
+            tk.Label(f, text="名称", bg=BG, fg=DIM, font=(FONT, 8 + SZ)).pack(side="left")
+            vn = tk.StringVar(value=name)
+            en = tk.Entry(f, textvariable=vn, width=12, bg=BG3, fg=FG, bd=0,
+                          insertbackground=FG, font=(FONT, 9 + SZ), highlightthickness=0)
+            en.pack(side="left", padx=(4, 10), ipady=3)
+
+            item = {"key": vk, "name": vn, "color": color, "frame": f, "sw": sw}
+
+            def pick(item=item):
+                from tkinter import colorchooser
+                _rgb, hexv = colorchooser.askcolor(color=item["color"], title="学科颜色")
+                if hexv:
+                    item["color"] = hexv.upper()
+                    item["sw"].configure(bg=item["color"], activebackground=item["color"])
+
+            sw.configure(command=pick)
+            rm = tk.Label(f, text="删除", bg=BG, fg=DANGER, cursor="hand2",
+                          font=(FONT, 8 + SZ))
+            rm.pack(side="right")
+            rm.bind("<Button-1>", lambda e, it=item: (it["frame"].destroy(),
+                                                      rows.remove(it)))
+
+            rows.append(item)
+            return item
+
+        for key, (name, color) in self.store.subjects.items():
+            add_row(key, name, color)
+
+        bar = tk.Frame(pad, bg=BG)
+        bar.pack(fill="x", pady=(10, 0))
+        btn(bar, "＋ 新增学科", lambda: add_row("sub%d" % (len(rows) + 1), "新学科"),
+            bg=BG3, fg=FG, width=10, pad=4).pack(side="left")
+        btn(bar, "保存", lambda: self._save_subjects(rows, d), bg=ACCENT, fg="#FFFFFF",
+            width=5, pad=4).pack(side="right")
+        btn(bar, "取消", d.destroy, bg=BG3, fg=FG, width=5, pad=4).pack(side="right", padx=6)
+
+        tk.Label(pad, text="改完点保存立即生效；已存在的任务会按新颜色重绘。",
+                 bg=BG, fg=DIM, anchor="w", font=(FONT, 8 + SZ)).pack(fill="x", pady=(8, 0))
+
+    def _save_subjects(self, rows: list, d) -> None:
+        items, seen = [], set()
+        for it in rows:
+            k = (it["key"].get() or "").strip()
+            n = (it["name"].get() or "").strip() or k
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            items.append({"key": k, "name": n, "color": it["color"]})
+        if not items:
+            self.show_banner("至少要保留一个学科", strong=False)
+            return
+        self.store.save_subjects(items)
+        try:
+            d.destroy()
+        except Exception:
+            pass
+        self.refresh()
+        self.show_banner(f"学科已更新（{len(items)} 个）", strong=False)
+
     def settings_dialog(self) -> None:
         d = self._dlg("设置", 440, 440)
         pad = tk.Frame(d, bg=BG, padx=14, pady=12)
@@ -1719,6 +1811,9 @@ class App:
         row += 1
         btn(pad, "外观与背景…", self.appearance_dialog, bg=BG3, fg=FG, width=12,
             pad=4).grid(row=row, column=1, sticky="w", pady=(8, 0))
+        row += 1
+        btn(pad, "学科与颜色…", self.subjects_dialog, bg=BG3, fg=FG, width=12,
+            pad=4).grid(row=row, column=1, sticky="w", pady=(6, 0))
         row += 1
 
         info = tk.Label(pad, text=f"StudyNudge v{VERSION} · 数据：{self.store.path}", bg=BG, fg=DIM,
@@ -1959,7 +2054,7 @@ class App:
             pct = 0 if not plan else int(round(done_n * 100.0 / plan))
             per, _days = st.week_stats(self.store.tasks, tdy)
             bits = [f"完成 {done_n}/{plan} 项（{pct}%）"]
-            for k, (nm, _c) in st.LINES.items():
+            for k, (nm, _c) in self.store.subjects.items():
                 tgt = st.WEEK_TEMPLATE.get(k)
                 if tgt is None:
                     continue
@@ -2006,7 +2101,7 @@ class App:
             tk.Label(grid, text=h, bg=BG, fg=DIM, font=(FONT, 8 + SZ, "bold"),
                      anchor="w").grid(row=0, column=c, sticky="w", padx=(0, 10))
         r = 1
-        for k, (name, color) in st.LINES.items():
+        for k, (name, color) in self.store.subjects.items():
             done = per[k]["done"]
             target = st.WEEK_TEMPLATE.get(k)
             gap = (done - target) if target is not None else None
