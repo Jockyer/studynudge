@@ -8,6 +8,13 @@ import re
 import subprocess
 import sys
 import time
+import json
+import shutil
+import tempfile
+import threading
+import urllib.request
+import webbrowser
+import zipfile
 import traceback
 import winsound
 from datetime import date, datetime, timedelta
@@ -36,7 +43,7 @@ DANGER = "#E05252"
 OK = "#4CAF7D"
 FONT = "Microsoft YaHei UI"
 SZ = 1
-VERSION = "1.2.3"                      # 全局字号偏移（用户要求大一号）
+VERSION = "1.2.4"                      # 全局字号偏移（用户要求大一号）
 WK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 PYW = su.pythonw()
 LOG_PATH = paths.data_dir() / "studynudge.log"
@@ -1761,6 +1768,127 @@ class App:
         self.refresh()
         self.show_banner(f"学科已更新（{len(items)} 个）", strong=False)
 
+    # ---------------- 更新 ----------------
+    REPO = "Jockyer/studynudge"
+    RELEASES = "https://github.com/Jockyer/studynudge/releases"
+
+    def _open_url(self, url: str) -> None:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _ver_tuple(s: str):
+        try:
+            parts = str(s).strip().lstrip("vV").split(".")[:3]
+            return tuple(int(x) for x in parts)
+        except Exception:
+            return ()
+
+    def check_update(self) -> None:
+        """后台查 GitHub 最新 Release，不卡界面。"""
+        try:
+            self._upd_label.configure(text="正在检查…", fg=th.mix(FG, BG, 0.5))
+        except Exception:
+            pass
+
+        def work():
+            try:
+                url = f"https://api.github.com/repos/{self.REPO}/releases/latest"
+                req = urllib.request.Request(url, headers={"User-Agent": "StudyNudge"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                tag = (data.get("tag_name") or "").strip()
+                page = data.get("html_url") or self.RELEASES
+                asset = ""
+                for a in data.get("assets") or []:
+                    if str(a.get("name", "")).lower().endswith(".zip"):
+                        asset = a.get("browser_download_url") or ""
+                        break
+                self.post(lambda: self._on_update_checked(tag, page, asset))
+            except Exception as e:
+                self.post(lambda: self._on_update_checked("", "", "", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_checked(self, tag: str, page: str, asset: str, err: str = "") -> None:
+        self._update_info = {"tag": tag, "page": page, "asset": asset}
+        try:
+            if err:
+                self._upd_label.configure(text="检查失败：网络不通或 GitHub 不可达", fg=DANGER)
+                return
+            if tag and self._ver_tuple(tag) > self._ver_tuple(VERSION):
+                self._upd_label.configure(text=f"发现新版本 {tag}（当前 v{VERSION}）", fg=OK)
+                try:
+                    self._upd_btn.pack(side="right")
+                except Exception:
+                    pass
+            else:
+                self._upd_label.configure(text=f"已是最新（v{VERSION}）",
+                                          fg=th.mix(FG, BG, 0.5))
+        except Exception:
+            pass
+
+    def do_update(self) -> None:
+        """下载新版 → 生成 updater 脚本 → 退出，由脚本覆盖并重启。"""
+        info = getattr(self, "_update_info", {}) or {}
+        page = info.get("page") or self.RELEASES
+        asset = info.get("asset") or ""
+        if not asset:
+            self._open_url(page)
+            return
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo("更新", "源码运行模式不能自动替换程序文件。\n"
+                                        "请到发布页下载新版压缩包。", parent=self.root)
+            self._open_url(page)
+            return
+        if not messagebox.askyesno(
+                "更新",
+                "将下载新版并替换程序文件（data 目录保留），完成后自动重启。\n继续吗？",
+                parent=self.root):
+            return
+        try:
+            self._upd_label.configure(text="正在下载…", fg=th.mix(FG, BG, 0.5))
+        except Exception:
+            pass
+
+        def work():
+            try:
+                tmp = Path(tempfile.gettempdir()) / "StudyNudge-update"
+                shutil.rmtree(tmp, ignore_errors=True)
+                tmp.mkdir(parents=True, exist_ok=True)
+                zp = tmp / "update.zip"
+                urllib.request.urlretrieve(asset, zp)
+                with zipfile.ZipFile(zp) as z:
+                    z.extractall(tmp / "new")
+                root_dir = tmp / "new"
+                sub = root_dir / "StudyNudge"
+                src = sub if sub.exists() else root_dir
+                exe = Path(sys.executable).resolve()
+                bat = tmp / "apply_update.bat"
+                bat.write_text(
+                    "@echo off\r\n"
+                    "timeout /t 3 /nobreak >nul\r\n"
+                    f'robocopy "{src}" "{exe.parent}" /E /XD data /NFL /NDL /NJH /NJS >nul\r\n'
+                    f'start "" "{exe}"\r\n'
+                    'del "%~f0"\r\n',
+                    encoding="gbk", errors="replace")
+                self.post(lambda: self._launch_updater(bat))
+            except Exception as e:
+                self.post(lambda: messagebox.showerror("更新失败", str(e), parent=self.root))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _launch_updater(self, bat) -> None:
+        try:
+            subprocess.Popen(["cmd", "/c", str(bat)], close_fds=True,
+                             creationflags=0x00000008)   # DETACHED_PROCESS
+        except Exception as e:
+            messagebox.showerror("更新失败", str(e), parent=self.root)
+            return
+        self.quit_app()
+
     def settings_dialog(self) -> None:
         """侧栏 + 详情：常规 / 提醒 / 任务 / 外观（沿用主窗的视觉语言）。"""
         d = self._dlg("设置", 760, 540)
@@ -1884,6 +2012,23 @@ class App:
         section(p, "关于")
         r = row(p, "StudyNudge v" + VERSION, "数据：" + str(self.store.path.parent))
         self.pill(r, "打开", self.open_data_dir).pack(side="right")
+
+        r = row(p, "开源仓库", "github.com/" + self.REPO)
+        self.pill(r, "打开", lambda: self._open_url("https://github.com/" + self.REPO)).pack(
+            side="right")
+
+        r = row(p, "下载 / 历史版本", "发布页，所有版本的 zip")
+        self.pill(r, "打开", lambda: self._open_url(self.RELEASES)).pack(side="right")
+
+        r = row(p, "检查更新", "对比 GitHub 上最新的 Release")
+        self.pill(r, "检查", self.check_update).pack(side="right")
+        self._upd_box = tk.Frame(p, bg=BG)
+        self._upd_box.pack(fill="x", pady=(0, 8))
+        self._upd_label = tk.Label(self._upd_box, text="", bg=BG, fg=th.mix(FG, BG, 0.5),
+                                   anchor="w", font=(FONT, 8 + SZ))
+        self._upd_label.pack(side="left")
+        self._upd_btn = self.pill(self._upd_box, "一键更新", self.do_update)
+
         r = row(p, "退出程序", "从托盘和内存中彻底退出")
         self.pill(r, "退出", self.quit_app).pack(side="right")
 

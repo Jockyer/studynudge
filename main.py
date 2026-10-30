@@ -2,6 +2,7 @@
 """StudyNudge 入口：高 DPI、单实例、异常日志、自检。"""
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -331,7 +332,7 @@ def selftest(data_path: Path) -> int:
                     else:
                         print("[ok] 取消完成 → 课次退回上一档，并标记回写进度.md")
 
-            # 延期：当天消失 → 次日置顶 + 标记
+        # 延期：当天消失 → 次日置顶 + 标记
             dft = st.new_task("延期测试", "math", "daily", tdy, [], 0.5, "", src="user")
             store.tasks.append(dft)
             st.defer_task(dft, 1, tdy)
@@ -393,11 +394,42 @@ def selftest(data_path: Path) -> int:
         except Exception:
             pass
 
+        # 数据迁移：旧版（无 version 字段）→ 当前版本
+        mig = data_path.parent / "_selftest_v1.json"
+        bak = data_path.parent / "_selftest_v1.json.v1.bak"
+        for f in (mig, bak):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        mig.write_text(json.dumps({
+            "tasks": [{"id": "t_old1", "title": "旧任务", "line": "math",
+                        "kind": "daily", "weekdays": [], "est_hours": 1.0}],
+            "settings": {"remind_interval_min": 45},
+        }, ensure_ascii=False), encoding="utf-8")
+        s_old = st.Store(mig)
+        t_old = s_old.tasks[0] if s_old.tasks else {}
+        if s_old.data.get("version") != st.DATA_VERSION:
+            fails.append(f"迁移后 version 不对：{s_old.data.get('version')}")
+        elif not getattr(s_old, "migrated", None):
+            fails.append("迁移没有留下说明")
+        elif any(k not in t_old for k in ("src", "pkey", "step", "timer_start")):
+            fails.append(f"迁移后任务字段缺失：{t_old}")
+        elif "subjects" not in s_old.settings:
+            fails.append("迁移后设置缺 subjects")
+        else:
+            print(f"[ok] 数据迁移 v1 → v{st.DATA_VERSION}，旧文件已备份")
+        for f in (mig, bak):
+            try:
+                f.unlink()
+            except Exception:
+                pass
     if fails:
         print("\n[FAIL]")
         for f in fails:
             print(" -", f)
         return 1
+
     print("\n[PASS] 自检全部通过")
     return 0
 

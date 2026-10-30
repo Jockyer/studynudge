@@ -20,6 +20,30 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # 26 周规划锚点：W1 = 2026-09-14（周一）
+DATA_VERSION = 3          # 数据结构版本：改字段就 +1，并在这里补一段迁移
+
+# 迁移表：版本号 → 说明（真正的字段补齐交给 normalize / DEFAULT_SETTINGS，
+# 这里负责“结构性”改动，比如字段改名、拆分、合并）
+MIGRATIONS = {
+    2: "补任务字段：src / pkey / step / deadline / total_units / 延期 / 计时",
+    3: "补设置项：学科清单 / 主题色 / 背景 / 勿扰",
+}
+
+
+def migrate(raw: dict) -> tuple[dict, list[str]]:
+    """把旧结构升到 DATA_VERSION，返回 (新结构, 做了哪些迁移)。"""
+    notes = []
+    try:
+        ver = int(raw.get("version") or 1)
+    except Exception:
+        ver = 1
+    for v in range(ver + 1, DATA_VERSION + 1):
+        # 结构性改动写在这里；纯字段补齐由 normalize / DEFAULT_SETTINGS 兜底
+        notes.append(f"v{v - 1}→v{v}：{MIGRATIONS.get(v, '字段补齐')}")
+    raw["version"] = DATA_VERSION
+    return raw, notes
+
+
 WEEK1_MONDAY = date(2026, 9, 14)
 RANGE_RE = re.compile(r"(\d+)(\s*[–—\-~～]\s*)([A-Za-z]{0,2})(\d+)")
 
@@ -372,6 +396,7 @@ class Store:
 
     # -- 读写
     def load(self) -> None:
+        self.migrated = []
         if not self.path.exists():
             self.data["tasks"] = seed_tasks()
             self.settings["seed_version"] = SEED_VERSION
@@ -379,16 +404,24 @@ class Store:
                 self.settings["progress_md"] = str(paths.data_dir() / "任务列表.md")
             self.save()
             return
+        raw = {}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("root is not object")
         except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+
+        # 旧版本数据：先备份，再迁移到当前结构
+        old_ver = raw.get("version") or 1
+        if old_ver < DATA_VERSION:
             try:
-                shutil.copy2(self.path, self.path.with_suffix(".corrupt.json"))
+                bak = self.path.with_name(self.path.name + f".v{old_ver}.bak")
+                shutil.copy2(self.path, bak)
             except Exception:
                 pass
-            raw = {}
+            raw, self.migrated = migrate(raw)
+
         s = dict(DEFAULT_SETTINGS)
         s.update(raw.get("settings") or {})
         if not s.get("progress_md"):
@@ -401,7 +434,9 @@ class Store:
             if "src" not in t:      # 旧数据没这字段：内置标题算 seed，其余算用户自建
                 nt["src"] = "seed" if nt["title"] in SEED_TITLES else "user"
             tasks.append(nt)
-        self.data = {"version": 1, "tasks": tasks, "settings": s}
+        self.data = {"version": DATA_VERSION, "tasks": tasks, "settings": s}
+        if old_ver < DATA_VERSION:
+            self.save()          # 迁移后立刻落盘，避免每次启动都重跑
         self.migrate_seed()
 
     def migrate_seed(self) -> bool:
