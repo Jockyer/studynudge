@@ -36,7 +36,7 @@ DANGER = "#E05252"
 OK = "#4CAF7D"
 FONT = "Microsoft YaHei UI"
 SZ = 1
-VERSION = "1.2.2"                      # 全局字号偏移（用户要求大一号）
+VERSION = "1.0"                      # 全局字号偏移（用户要求大一号）
 WK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 PYW = su.pythonw()
 LOG_PATH = paths.data_dir() / "studynudge.log"
@@ -526,12 +526,6 @@ class App:
     def on_close(self) -> None:
         """点 ×：按设置收到托盘或贴边条。"""
         self.collapse()
-
-    def open_data_dir(self) -> None:
-        try:
-            os.startfile(str(self.store.path.parent))
-        except Exception:
-            pass
 
     def quit_app(self) -> None:
         """退出：先收托盘再销毁窗口。"""
@@ -1762,176 +1756,74 @@ class App:
         self.show_banner(f"学科已更新（{len(items)} 个）", strong=False)
 
     def settings_dialog(self) -> None:
-        """侧栏 + 详情：常规 / 提醒 / 任务 / 外观 四类。"""
-        d = self._dlg("设置", 780, 560)
+        d = self._dlg("设置", 440, 440)
+        pad = tk.Frame(d, bg=BG, padx=14, pady=12)
+        pad.pack(fill="both", expand=True)
+        e_int = tk.Entry(pad, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
+                         highlightthickness=0, width=8)
+        self._lab(pad, "提醒间隔(分钟)", 0)
+        e_int.grid(row=0, column=1, sticky="w", pady=3, ipady=4)
+        e_int.insert(0, str(self.s.get("remind_interval_min", 30)))
+        self._lab(pad, "免打扰 起/止", 1)
+        qf = tk.Frame(pad, bg=BG)
+        qf.grid(row=1, column=1, sticky="w", pady=3)
+        e_q1 = tk.Entry(qf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
+                        highlightthickness=0, width=8)
+        e_q1.pack(side="left")
+        tk.Label(qf, text=" ~ ", bg=BG, fg=DIM, font=(FONT, 9 + SZ)).pack(side="left")
+        e_q2 = tk.Entry(qf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
+                        highlightthickness=0, width=8)
+        e_q2.pack(side="left")
+        qh = self.s.get("quiet_hours") or ["23:30", "07:00"]
+        e_q1.insert(0, qh[0])
+        e_q2.insert(0, qh[1])
 
-        top = tk.Frame(d, bg=BG)
-        top.pack(fill="x", padx=18, pady=(14, 8))
-        tk.Label(top, text="设置", bg=BG, fg=FG, font=(FONT, 15 + SZ, "bold")).pack(side="left")
-        btn(top, "关闭", d.destroy, bg=BG3, fg=FG, width=4, pad=3).pack(side="right")
-
-        body = tk.Frame(d, bg=BG)
-        body.pack(fill="both", expand=True, padx=14, pady=(0, 6))
-
-        side = tk.Frame(body, bg=BG2, width=152)
-        side.pack(side="left", fill="y")
-        side.pack_propagate(False)
-        main = tk.Frame(body, bg=BG)
-        main.pack(side="left", fill="both", expand=True, padx=(14, 0))
-
-        # ---------------- 变量 ----------------
         v_sound = tk.IntVar(value=1 if self.s.get("sound_on", True) else 0)
         v_panel = tk.IntVar(value=1 if self.s.get("startup_panel", True) else 0)
-        v_top = tk.IntVar(value=1 if self.s.get("topmost") else 0)
+        v_top = tk.IntVar(value=1 if self.s.get("topmost", True) else 0)
         v_tray = tk.IntVar(value=1 if self.s.get("tray", True) else 0)
-        v_dnd = tk.IntVar(value=1 if self.s.get("dnd_fullscreen", True) else 0)
         v_auto = tk.IntVar(value=1 if su.is_enabled() else 0)
+        v_dnd = tk.IntVar(value=1 if self.s.get("dnd_fullscreen", True) else 0)
+        row = 2
+        for v, txt in ((v_sound, "提醒时播放系统提示音"),
+                       (v_panel, "启动时显示今日总览"),
+                       (v_top, "窗口始终置顶"),
+                       (v_tray, "点 × 收到系统托盘（否则贴边条）"),
+                       (v_dnd, "全屏（游戏/视频）时勿扰，退出后补提醒"),
+                       (v_auto, "开机自启动（登录后自动运行）")):
+            tk.Checkbutton(pad, text=txt, variable=v, bg=BG, fg=FG, selectcolor=BG3,
+                           activebackground=BG, activeforeground=ACCENT, bd=0,
+                           highlightthickness=0, font=(FONT, 9 + SZ), anchor="w"
+                           ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+            row += 1
 
-        def cb(parent, var, text=""):
-            return tk.Checkbutton(parent, text=text, variable=var, bg=BG, fg=FG,
-                                  selectcolor=BG3, activebackground=BG,
-                                  activeforeground=FG, bd=0, highlightthickness=0,
-                                  font=(FONT, 10 + SZ), cursor="hand2")
-
-        def card(parent, title=""):
-            f = tk.Frame(parent, bg=BG2)
-            f.pack(fill="x", pady=(0, 10))
-            if title:
-                tk.Label(f, text=title, bg=BG2, fg=DIM, anchor="w",
-                         font=(FONT, 8 + SZ)).pack(fill="x", padx=14, pady=(10, 0))
-            return f
-
-        def row(parent, label, hint=""):
-            f = tk.Frame(parent, bg=BG2)
-            f.pack(fill="x", padx=14, pady=6)
-            left = tk.Frame(f, bg=BG2)
-            left.pack(side="left", fill="x", expand=True)
-            tk.Label(left, text=label, bg=BG2, fg=FG, anchor="w",
-                     font=(FONT, 10 + SZ)).pack(fill="x")
-            if hint:
-                tk.Label(left, text=hint, bg=BG2, fg=DIM, anchor="w",
-                         font=(FONT, 8 + SZ)).pack(fill="x")
-            return f
-
-        def entry(parent, value, width=10):
-            e = tk.Entry(parent, width=width, bg=BG3, fg=FG, bd=0, insertbackground=FG,
-                         font=(FONT, 9 + SZ), highlightthickness=0)
-            e.insert(0, value)
-            e.pack(side="right", ipady=3)
-            return e
-
-        pages, nav = {}, {}
-
-        def show(key):
-            for f in pages.values():
-                f.pack_forget()
-            pages[key].pack(fill="both", expand=True)
-            for k, w in nav.items():
-                on = (k == key)
-                w.configure(bg=(th.mix(BG2, ACCENT, 0.25) if on else BG2),
-                            fg=(FG if on else th.mix(FG, BG2, 0.35)))
-
-        def nav_item(key, label):
-            w = tk.Label(side, text="   " + label, bg=BG2, fg=DIM, anchor="w",
-                         font=(FONT, 10 + SZ), pady=10, cursor="hand2")
-            w.pack(fill="x", pady=1, padx=6)
-            w.bind("<Button-1>", lambda e, k=key: show(k))
-            nav[key] = w
-
-        for key, label in (("general", "常规"), ("remind", "提醒"),
-                           ("task", "任务"), ("look", "外观")):
-            pages[key] = tk.Frame(main, bg=BG)
-            nav_item(key, label)
-
-        # ---------------- 常规 ----------------
-        p = pages["general"]
-        c = card(p)
-        r = row(c, "启动时显示今日总览", "开机后先弹出今日清单")
-        cb(r, v_panel).pack(side="right")
-        r = row(c, "窗口始终置顶", "其它窗口不会盖住提示器")
-        cb(r, v_top).pack(side="right")
-        r = row(c, "点 × 收到系统托盘", "关掉后点 × 变成贴边小条")
-        cb(r, v_tray).pack(side="right")
-        r = row(c, "开机自启动", "登录 Windows 后自动运行")
-        cb(r, v_auto).pack(side="right")
-
-        c2 = card(p, "关于")
-        r = row(c2, f"StudyNudge v{VERSION}", "数据目录：" + str(self.store.path.parent))
-        btn(r, "打开", lambda: self.open_data_dir(), bg=BG3, fg=FG, width=4,
-            pad=3).pack(side="right")
-        r = row(c2, "退出程序", "从托盘和内存中彻底退出")
-        btn(r, "退出", self.quit_app, bg=BG3, fg=DANGER, width=4, pad=3).pack(side="right")
-
-        # ---------------- 提醒 ----------------
-        p = pages["remind"]
-        c = card(p)
-        r = row(c, "提醒间隔", "还有未完成任务时，每隔多久提醒一次")
-        tk.Label(r, text="分钟", bg=BG2, fg=DIM, font=(FONT, 9 + SZ)).pack(side="right", padx=(6, 0))
-        e_int = entry(r, str(self.s.get("remind_interval_min", 60)), 6)
-
-        r = row(c, "免打扰时段", "这段时间内不弹提醒（HH:MM）")
-        e_q2 = entry(r, (self.s.get("quiet_hours") or ["23:30", "07:00"])[1], 7)
-        tk.Label(r, text="→", bg=BG2, fg=DIM, font=(FONT, 9 + SZ)).pack(side="right", padx=4)
-        e_q1 = entry(r, (self.s.get("quiet_hours") or ["23:30", "07:00"])[0], 7)
-
-        r = row(c, "提醒时播放提示音", "系统提示音，不会很吵")
-        cb(r, v_sound).pack(side="right")
-        r = row(c, "全屏（游戏/视频）时勿扰", "退出全屏后补提醒")
-        cb(r, v_dnd).pack(side="right")
-
-        # ---------------- 任务 ----------------
-        p = pages["task"]
-        c = card(p, "任务列表文件")
-        r = row(c, "进度文件", "提示器只读这个文件里的「当前执行」小节")
-        e_pmd = tk.Entry(r, bg=BG3, fg=FG, bd=0, insertbackground=FG,
-                         font=(FONT, 8 + SZ), highlightthickness=0, width=34)
+        self._lab(pad, "进度文件", row)
+        pf = tk.Frame(pad, bg=BG)
+        pf.grid(row=row, column=1, sticky="w", pady=3)
+        e_pmd = tk.Entry(pf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 8 + SZ),
+                         highlightthickness=0, width=28)
+        e_pmd.pack(side="left", ipady=3)
         e_pmd.insert(0, str(self.s.get("progress_md") or ""))
-        e_pmd.pack(side="right", ipady=3)
-        r2 = tk.Frame(c, bg=BG2)
-        r2.pack(fill="x", padx=14, pady=(0, 10))
-        btn(r2, "立即同步", lambda: self._sync_from(e_pmd.get()), bg=BG3, fg=FG,
-            width=8, pad=3).pack(side="right")
-        btn(r2, "选择文件…", lambda: self._pick_task_file(e_pmd), bg=BG3, fg=FG,
-            width=9, pad=3).pack(side="right", padx=6)
+        btn(pf, "↻ 同步", lambda: self._sync_from(e_pmd.get()), width=6, pad=3).pack(
+            side="left", padx=(4, 0))
+        btn(pf, "…", lambda: self._pick_task_file(e_pmd), width=2, pad=3).pack(
+            side="left", padx=(2, 0))
+        row += 1
+        btn(pad, "外观与背景…", self.appearance_dialog, bg=BG3, fg=FG, width=12,
+            pad=4).grid(row=row, column=1, sticky="w", pady=(8, 0))
+        row += 1
+        btn(pad, "学科与颜色…", self.subjects_dialog, bg=BG3, fg=FG, width=12,
+            pad=4).grid(row=row, column=1, sticky="w", pady=(6, 0))
+        row += 1
 
-        c2 = card(p, "学科")
-        r = row(c2, "学科与颜色", "增删改学科 key / 名称 / 学科线颜色")
-        btn(r, "编辑…", self.subjects_dialog, bg=BG3, fg=FG, width=6, pad=3).pack(side="right")
-
-        # ---------------- 外观 ----------------
-        p = pages["look"]
-        c = card(p, "主题色")
-        sw = tk.Frame(c, bg=BG2)
-        sw.pack(fill="x", padx=14, pady=(8, 12))
-        cur = (self.s.get("theme_accent") or th.DEFAULT_ACCENT).upper()
-        for name, hexv in th.PRESETS:
-            b = tk.Button(sw, text="", bg=hexv, activebackground=hexv, bd=0, width=3,
-                          height=1, cursor="hand2",
-                          relief=("sunken" if hexv.upper() == cur else "flat"),
-                          command=lambda h=hexv: self._set_accent(h))
-            b.pack(side="left", padx=3)
-        btn(sw, "自定义…", self._pick_accent, bg=BG3, fg=FG, width=7,
-            pad=3).pack(side="left", padx=(10, 0))
-
-        c2 = card(p, "背景照片")
-        r = row(c2, "照片", self.s.get("bg_photo") or "（未选择）")
-        btn(r, "清除", self._clear_photo, bg=BG3, fg=FG, width=4, pad=3).pack(side="right")
-        btn(r, "选择…", self._pick_photo, bg=BG3, fg=FG, width=5,
-            pad=3).pack(side="right", padx=6)
-
-        r = row(c2, "透明度", "越高照片越明显；同时影响卡片、顶栏与滚动滑块")
-        v_alpha = tk.IntVar(value=int(round(float(self.s.get("bg_alpha", 0) or 0) * 100)))
-        sc = tk.Scale(r, from_=0, to=100, orient="horizontal", variable=v_alpha,
-                      bg=BG2, fg=FG, troughcolor=BG3, highlightthickness=0, bd=0,
-                      length=200, showvalue=True,
-                      command=lambda v: self._set_alpha(int(float(v)) / 100))
-        sc.pack(side="right")
-
-        # ---------------- 底部 ----------------
-        bf = tk.Frame(d, bg=BG)
-        bf.pack(fill="x", padx=18, pady=(0, 14))
-        note = tk.Label(bf, text="", bg=BG, fg=DIM, anchor="w", font=(FONT, 8 + SZ))
-        note.pack(side="left")
+        info = tk.Label(pad, text=f"StudyNudge v{VERSION} · 数据：{self.store.path}", bg=BG, fg=DIM,
+                        font=(FONT, 8 + SZ), anchor="w", wraplength=380, justify="left")
+        info.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        row += 1
+        note = tk.Label(pad, text="", bg=BG, fg=OK, font=(FONT, 8 + SZ), anchor="w",
+                        wraplength=380, justify="left")
+        note.grid(row=row, column=0, columnspan=2, sticky="w")
+        pad.columnconfigure(1, weight=1)
 
         def save():
             try:
@@ -1982,11 +1874,16 @@ class App:
             note.configure(text="；".join(msgs) or "已保存")
             self.last_remind = datetime.now()
 
-        btn(bf, "保存", save, bg=ACCENT, fg="#FFFFFF", width=6, pad=4).pack(side="right")
-        btn(bf, "取消", d.destroy, bg=BG3, fg=FG, width=5, pad=4).pack(side="right", padx=6)
+        bf = tk.Frame(pad, bg=BG)
+        bf.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        btn(bf, "保存", save, bg=ACCENT, fg="#FFFFFF", width=8).pack(side="right", padx=(6, 0))
+        btn(bf, "关闭", d.destroy, width=6).pack(side="right")
+        btn(bf, "打开数据文件夹", lambda: subprocess.Popen(
+            ["explorer", str(self.store.path.parent)]), width=14).pack(side="left")
+        btn(bf, "退出程序", lambda: (d.destroy(), self.quit_app()), bg="#3A2226",
+            fg=DANGER, width=8).pack(side="left", padx=(6, 0))
 
-        show("general")
-
+    # ------------------------------------------------------------ 本周俯瞰
     def _week_sub(self, t: dict, tdy: date) -> str:
         """推进型任务在本周俯瞰里的副标题：本周还能推到哪。"""
         step = int(t.get("step") or 0)
