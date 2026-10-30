@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """StudyNudge 数据层：任务模型 / 原子读写 / 日期与统计。
 
 任务种类:
@@ -141,6 +141,8 @@ def new_task(title: str, line: str = "other", kind: str = "once",
         "done_dates": [],
         "defer_count": 0,
         "spent_hours": 0.0,
+        "timer_start": "",     # 正在计时时的开始时间（iso），空=未计时
+        "timer_beat": "",      # 计时心跳，用于崩溃/重启后只累计到上次心跳
         "created_at": ts,
         "updated_at": ts,
     }
@@ -175,6 +177,8 @@ def normalize(t: dict) -> dict:
     out["defer_to"] = str(out.get("defer_to") or "")
     out["prev_title"] = str(out.get("prev_title") or "")
     out["advance_on"] = str(out.get("advance_on") or "")
+    out["timer_start"] = str(out.get("timer_start") or "")
+    out["timer_beat"] = str(out.get("timer_beat") or "")
     out["deadline"] = str(out.get("deadline") or "")
     try:
         out["total_units"] = max(0, int(out.get("total_units") or 0))
@@ -464,6 +468,66 @@ class Store:
             return
         t["spent_hours"] = round(float(t.get("spent_hours") or 0) + float(hours), 3)
         self.touch(t)
+
+
+
+# ---------------------------------------------------------------- 计时
+def _parse_dt(s: str):
+    try:
+        return datetime.fromisoformat(str(s))
+    except Exception:
+        return None
+
+
+def timer_running(t: dict) -> bool:
+    return bool(t.get("timer_start"))
+
+
+def elapsed_sec(t: dict) -> float:
+    """已累计秒数（含正在跑的这段）。"""
+    base = float(t.get("spent_hours") or 0) * 3600.0
+    s = _parse_dt(t.get("timer_start") or "")
+    if s:
+        base += max(0.0, (datetime.now() - s).total_seconds())
+    return base
+
+
+def start_timer(t: dict) -> None:
+    if not t.get("timer_start"):
+        t["timer_start"] = now_iso()
+        t["timer_beat"] = t["timer_start"]
+    t["updated_at"] = now_iso()
+
+
+def beat_timer(t: dict) -> None:
+    if t.get("timer_start"):
+        t["timer_beat"] = now_iso()
+
+
+def pause_timer(t: dict) -> float:
+    """停止并累计，返回本次新增小时。"""
+    s = _parse_dt(t.get("timer_start") or "")
+    if not s:
+        return 0.0
+    hours = max(0.0, (datetime.now() - s).total_seconds()) / 3600.0
+    t["spent_hours"] = round(float(t.get("spent_hours") or 0) + hours, 4)
+    t["timer_start"] = ""
+    t["timer_beat"] = ""
+    t["updated_at"] = now_iso()
+    return hours
+
+
+def restore_timer(t: dict) -> None:
+    """启动时恢复：只累计到最后一个心跳，不把关机时间算进去。"""
+    s = _parse_dt(t.get("timer_start") or "")
+    if not s:
+        return
+    beat = _parse_dt(t.get("timer_beat") or "") or s
+    hours = max(0.0, (beat - s).total_seconds()) / 3600.0
+    t["spent_hours"] = round(float(t.get("spent_hours") or 0) + hours, 4)
+    t["timer_start"] = ""
+    t["timer_beat"] = ""
+
 
 
 # ---------------------------------------------------------------- 导出

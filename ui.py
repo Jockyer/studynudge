@@ -100,6 +100,8 @@ class App:
         self._wheel_ts = 0.0
 
         self._apply_theme(rebuild=False)   # 先上色，再建界面
+        self.filter = "all"                # 列表筛选：all/todo/doing/done/overdue
+        self._restore_timer()              # 上次没停的计时先收尾
         self._init_root()
         self._build_main()
         self._paint_bg()
@@ -230,6 +232,8 @@ class App:
         self.btn_day.pack(side="left", padx=4, pady=(0, 10))
         self.pill(bar, "本周", self.week_dialog).pack(side="left", padx=4, pady=(0, 10))
         self.pill(bar, "统计", self.stats_dialog).pack(side="left", padx=4, pady=(0, 10))
+        self._filter_pill = self.pill(bar, "全部", self._filter_menu, kind="ghost")
+        self._filter_pill.pack(side="right", padx=(0, 12), pady=(0, 10))
 
         # 任务列表：自己算滚动（惯性 + 越界回弹），右侧只留一个小胶囊滑块
         wrap = tk.Frame(r, bg=BG)
@@ -380,9 +384,20 @@ class App:
         day = self.view_day
         pend = st.pending(day, self.store.tasks)
         done = st.completed(day, self.store.tasks)
+        self._timer_cv = None
         self._row_seq = 0
         self._row_cvs = []
         self._row_total = max(1, len(pend) + len(done))
+        flt = getattr(self, "filter", "all")
+        if flt == "doing":
+            show_pend = [x for x in pend if st.timer_running(x)]
+        elif flt == "overdue":
+            show_pend = [x for x in pend if st.overdue_days(x) > 0]
+        elif flt == "done":
+            show_pend = []
+        else:
+            show_pend = list(pend)
+        show_done = list(done) if flt in ("all", "done") else []
 
         # 顶栏
         wd = "一二三四五六日"[day.isoweekday() - 1]
@@ -402,23 +417,27 @@ class App:
             except Exception:
                 tail = ""
             self.lbl_sum.configure(
-                text=f"完成 {len(done)}/{len(pend) + len(done)} · 剩 {total_h:g}h{tail}")
+                text=(f"完成 {len(done)}/{len(pend) + len(done)} · 剩 {total_h:g}h"
+                      + (f" · 逾期 {len(od)}" if od else "") + tail))
             if getattr(self, "btn_day", None) is not None:
                 self.btn_day._set("今日" if st.iso(day) != st.iso(st.today()) else "明日")
         except Exception:
             pass
 
-        for t in pend:
+        for t in show_pend:
             self._row(t, done=False)
-        if done:
-            tk.Label(self.inner, text=f"已完成 {len(done)} 项 · 点击可撤销",
+        if show_done:
+            tk.Label(self.inner, text=f"已完成 {len(show_done)} 项 · 点击可撤销",
                      bg=BG, fg=DIM, anchor="w",
                      font=(FONT, 8 + SZ)).pack(fill="x", padx=8, pady=(10, 2))
-            for t in done:
+            for t in show_done:
                 self._row(t, done=True)
 
+        if not show_pend and not show_done:
+            tk.Label(self.inner, text="这里没有任务", bg=BG, fg=DIM, anchor="w",
+                     font=(FONT, 9 + SZ)).pack(fill="x", padx=12, pady=16)
         # 今日清空 → 把明天的任务挂出来（学有余力可提前做）
-        if not pend and st.iso(day) == st.iso(st.today()):
+        if not pend and flt in ("all", "todo") and st.iso(day) == st.iso(st.today()):
             tmr = day + timedelta(days=1)
             tp = st.pending(tmr, self.store.tasks)
             if tp:
@@ -512,6 +531,12 @@ class App:
 
     def quit_app(self) -> None:
         """退出：先收托盘再销毁窗口。"""
+        try:
+            for x in self.store.tasks:
+                if st.timer_running(x):
+                    st.pause_timer(x)
+        except Exception:
+            pass
         try:
             if getattr(self, "tray", None):
                 self.tray.stop()
@@ -730,16 +755,56 @@ class App:
             except Exception:
                 pass
 
-    def _row(self, t: dict, done: bool, day=None) -> None:
-        """一行 = 一块 Canvas：底层贴该区域背景，上层贴圆角半透明卡片。"""
+    def _fit_text(self, text: str, font, width: int) -> str:
+        """按像素宽度截断，加省略号（不挤压右侧按钮）。"""
+        try:
+            if font.measure(text) <= width:
+                return text
+            s = text
+            while s and font.measure(s + "…") > width:
+                s = s[:-1]
+            return s + "…"
+        except Exception:
+            return text
+
+    def _meta_text(self, t: dict, done: bool, day=None) -> str:
         day = day or self.view_day
-        name, color = st.LINES.get(t.get("line"), st.LINES["other"])
+        name = st.LINES.get(t.get("line"), st.LINES["other"])[0]
+        od = st.overdue_days(t)
+        running = st.timer_running(t)
+        deferred = (not done) and st.is_deferred(t, day)
+        bits = [name]
+        if running:
+            bits.append("计时中")
+        elif done:
+            bits.append("已完成")
+        elif deferred:
+            bits.append("已延期")
+        elif od:
+            bits.append(f"逾期 {od} 天")
+        else:
+            bits.append("待完成")
+        if t.get("deadline"):
+            bits.append(f"截止 {str(t['deadline'])[5:]}")
+        bits.append(f"预计 {float(t.get('est_hours') or 0):g}h")
+        sec = st.elapsed_sec(t)
+        if sec >= 60:
+            bits.append(f"实际 {sec / 3600:.1f}h")
+        return "  ·  ".join(bits)
+
+    def _row(self, t: dict, done: bool, day=None) -> None:
+        """一行 = 圆角半透明卡片：第一行标题 + 操作，第二行状态与元信息。"""
+        day = day or self.view_day
+        _name, color = st.LINES.get(t.get("line"), st.LINES["other"])
         step = int(t.get("step") or 0)
         od = st.overdue_days(t)
         deferred = (not done) and st.is_deferred(t, day)
         weekly = t.get("kind") == "weekly"
+        running = st.timer_running(t)
         if deferred:
             base, edge = "#3A2A22", DANGER
+        elif running:
+            base, edge = BG2, ACCENT
         elif step > 0:
             base, edge = BG2, "#5B9BD5"
         elif weekly:
@@ -747,109 +812,174 @@ class App:
         else:
             base, edge = BG2, th.mix(BG2, FG, 0.16)
 
-        title = self._title_for(t, day)
-        bits = [name]
-        if od:
-            bits.append(f"逾期 {od} 天")
-        if deferred:
-            bits.append("延期")
-        if step > 0:
-            bits.append(f"推进 +{step}")
-        if t.get("deadline"):
-            bits.append(f"截止 {str(t['deadline'])[5:]}")
-        bits.append(f"{float(t.get('est_hours') or 0):g}h")
-        if weekly:
-            wd = [d for d in (t.get("weekdays") or []) if 1 <= d <= 7]
-            bits.append("每周 " + "".join("一二三四五六日"[d - 1] for d in wd))
-        else:
-            bits.append("每日")
-        if int(t.get("defer_count") or 0) > 0:
-            bits.append(f"延期 {t['defer_count']} 次")
-        if float(t.get("spent_hours") or 0) > 0:
-            bits.append(f"实际 {float(t['spent_hours']):g}h")
-        meta = "  ·  ".join(bits)
-
         ft = tkfont.Font(font=(FONT, 11 + SZ, "overstrike" if done else "normal"))
         fm = tkfont.Font(font=(FONT, 8 + SZ))
-        W = max(240, (self.canvas.winfo_width() or 380) - 20)
-        tw = max(90, W - 58 - 140)
-        n = max(1, min(3, -(-ft.measure(title) // tw)))
-        mn = max(1, min(2, -(-fm.measure(meta) // tw)))
-        th_ = n * ft.metrics("linespace")
-        H = 16 + th_ + 4 + mn * fm.metrics("linespace") + 10
+        W = max(240, (self.canvas.winfo_width() or 380) - 18)
+        tw = max(80, W - 58 - 112)
+        title = self._fit_text(self._title_for(t, day), ft, tw)
+        meta = self._fit_text(self._meta_text(t, done, day), fm, tw)   # 单行截断，避免被卡片底边裁掉
+        th_ = ft.metrics("linespace")
+        mh = fm.metrics("linespace")
+        H = 13 + th_ + 3 + mh + 12
 
         cv = tk.Canvas(self.inner, height=H, bg=BG2, highlightthickness=0, bd=0, takefocus=0)
         cv.pack(fill="x", pady=5, padx=(6, 10))
-        cv._base, cv._edge, cv._deferred = base, edge, deferred
+        cv._base, cv._edge, cv._deferred, cv._task = base, edge, deferred, t
         self._row_cvs.append(cv)
+        if running:
+            self._timer_cv = cv
 
         cv._bg0 = cv.create_image(0, 0, anchor="nw", tags="bgbg")
         cv._bg1 = cv.create_image(0, 0, anchor="nw", tags="card")
-        cv.create_polygon(_rr(1, 1, W - 1, H - 1, 10), smooth=True, fill="",
-                          outline=edge, width=1)
-        cv.create_line(12, 12, 12, H - 12, fill=color, width=3, capstyle="round")
-
-        cx, cy = 32, H // 2
-        cv._cb = cv.create_oval(cx - 8, cy - 8, cx + 8, cy + 8,
-                                outline=(OK if done else (DANGER if deferred
-                                                          else th.mix(FG, BG2, 0.5))),
-                                fill=(OK if done else ""), width=1)
-        if done:
-            cv.create_line(cx - 4, cy, cx - 1, cy + 4, cx + 5, cy - 4,
-                           fill="#FFFFFF", width=2)
-        ti = cv.create_text(54, 13, anchor="nw", text=title, width=tw,
-                            fill=(th.mix(FG, BG2, 0.45) if done else FG),
-                            font=ft, justify="left")
-        cv.create_text(54, 13 + th_ + 5, anchor="nw", text=meta, width=tw,
-                       fill=(DANGER if (od or deferred) else th.mix(FG, BG2, 0.42)),
-                       font=fm, justify="left")
-
-        def chip(x, cy, label, fg, cmd, size=15):
-            rect = cv.create_polygon(_rr(x - size, cy - size, x + size, cy + size, 9),
-                                     smooth=True, fill=th.mix(BG2, fg, 0.16), outline="")
-            txt = cv.create_text(x, cy - 1, text=label, fill=fg,
-                                 font=(FONT, 10 + SZ, "bold"))
-            def _on(_e, _r=rect):
-                try:
-                    cv.itemconfigure(_r, fill=th.mix(BG2, fg, 0.34))
-                except Exception:
-                    pass
-            def _off(_e, _r=rect):
-                try:
-                    cv.itemconfigure(_r, fill=th.mix(BG2, fg, 0.16))
-                except Exception:
-                    pass
-            for i in (rect, txt):
-                cv.tag_bind(i, "<Button-1>", lambda e: cmd())
-                cv.tag_bind(i, "<Enter>", _on)
-                cv.tag_bind(i, "<Leave>", _off)
+        cv.create_polygon(_rr(1, 1, W - 1, H - 1, 10), smooth=True, fill="", outline=edge)
+        cv.create_line(11, 15, 11, H - 15, fill=color, width=3, capstyle="round")
 
         cy = H // 2
+        cx = 33
+        cv._cb = cv.create_oval(cx - 8, cy - 8, cx + 8, cy + 8,
+                                outline=(OK if done else (DANGER if (od or deferred)
+                                                          else th.mix(FG, BG2, 0.5))),
+                                width=2, fill=(OK if done else ""))
+        if done:
+            cv.create_line(cx - 4, cy, cx - 1, cy + 4, cx + 5, cy - 4, fill="#FFFFFF", width=2)
+        ti = cv.create_text(55, 13, anchor="nw", text=title, width=tw,
+                            fill=(th.mix(FG, BG2, 0.45) if done else FG), font=ft, justify="left")
+        cv._meta_id = cv.create_text(55, 13 + th_ + 4, anchor="nw", text=meta, width=tw,
+                                     fill=(DANGER if (od or deferred) else th.mix(FG, BG2, 0.42)),
+                                     font=fm, justify="left")
+
+        def chip(x, label, fg, cmd, size=15):
+            bgc = th.mix(BG2, fg, 0.16)
+            rect = cv.create_polygon(_rr(x - size, cy - size, x + size, cy + size, 9),
+                                     smooth=True, fill=bgc, outline="")
+            txt = cv.create_text(x, cy - 1, text=label, fill=fg,
+                                 font=(FONT, 9 + SZ, "bold"))
+            for i in (rect, txt):
+                cv.tag_bind(i, "<Button-1>", lambda e, c=cmd: c())
+                cv.tag_bind(i, "<Enter>", lambda e, _r=rect: cv.itemconfigure(
+                    _r, fill=th.mix(BG2, fg, 0.36)))
+                cv.tag_bind(i, "<Leave>", lambda e, _r=rect: cv.itemconfigure(_r, fill=bgc))
+
+        chip(W - 20, "⋮", th.mix(FG, BG2, 0.25), lambda: self._more_menu(t, cv), size=14)
         if not done:
-            chip(W - 24, cy, "✎", th.mix(FG, BG2, 0.25), lambda: self.edit_task(t))
-            if self._is_timing(t):
-                chip(W - 62, cy, "■", DANGER, lambda: self.toggle_timer(t))
-            else:
-                chip(W - 62, cy, "▶", th.mix(FG, BG2, 0.25), lambda: self.toggle_timer(t))
-            chip(W - 100, cy, "延", "#E8A33D", lambda: self.defer(t))
-        else:
-            chip(W - 24, cy, "✎", th.mix(FG, BG2, 0.35), lambda: self.edit_task(t))
+            chip(W - 54, "■" if running else "▶",
+                 (DANGER if running else th.mix(FG, BG2, 0.2)),
+                 lambda: self.toggle_timer(t), size=15)
+            chip(W - 88, "延", "#E0A030", lambda: self._defer_menu(t, cv), size=13)
 
         for i in (cv._cb, ti):
             cv.tag_bind(i, "<Button-1>", lambda e, tt=t: self.toggle(tt))
+        cv.bind("<Enter>", lambda e: (setattr(cv, "_hover", True),
+                                      setattr(cv, "_bg_key", None),
+                                      self._repaint_rows(only=cv)))
+        cv.bind("<Leave>", lambda e: (setattr(cv, "_hover", False),
+                                      setattr(cv, "_bg_key", None),
+                                      self._repaint_rows(only=cv)))
 
-        def on_enter(_e):
-            cv._hover = True
-            cv._bg_key = None
-            self._repaint_rows(only=cv)
+    # ---------------- 延期 / 更多菜单 ----------------
+    def _popup(self, items, x: int, y: int, width: int = 168) -> None:
+        d = tk.Toplevel(self.root)
+        d.overrideredirect(True)
+        d.configure(bg=th.mix(BG2, FG, 0.22))
+        d.attributes("-topmost", True)
+        d.geometry(f"{width}x{len(items) * 30 + 8}+{x}+{y}")
+        box = tk.Frame(d, bg=BG2)
+        box.pack(fill="both", expand=True, padx=1, pady=1)
 
-        def on_leave(_e):
-            cv._hover = False
-            cv._bg_key = None
-            self._repaint_rows(only=cv)
+        def pick(cmd):
+            d.destroy()
+            cmd()
 
-        cv.bind("<Enter>", on_enter)
-        cv.bind("<Leave>", on_leave)
+        for label, cmd, fg in items:
+            b = tk.Label(box, text=label, bg=BG2, fg=fg or FG, anchor="w",
+                         font=(FONT, 9 + SZ), padx=12, pady=5, cursor="hand2")
+            b.pack(fill="x")
+            b.bind("<Enter>", lambda e, w=b: w.configure(bg=th.mix(BG2, FG, 0.10)))
+            b.bind("<Leave>", lambda e, w=b: w.configure(bg=BG2))
+            b.bind("<Button-1>", lambda e, c=cmd: pick(c))
+        d.bind("<FocusOut>", lambda e: d.destroy())
+        d.bind("<Escape>", lambda e: d.destroy())
+        try:
+            d.focus_force()
+        except Exception:
+            pass
+
+    def _menu_at(self, cv) -> tuple:
+        try:
+            return cv.winfo_rootx() + cv.winfo_width() - 176, cv.winfo_rooty() + 28
+        except Exception:
+            return 200, 200
+
+    def _filter_menu(self) -> None:
+        p = self._filter_pill
+        try:
+            x = p.winfo_rootx()
+            y = p.winfo_rooty() + p.winfo_height() + 2
+        except Exception:
+            x, y = 200, 200
+        self._popup([
+            ("全部", lambda: self._set_filter("all"), None),
+            ("待办", lambda: self._set_filter("todo"), None),
+            ("进行中", lambda: self._set_filter("doing"), None),
+            ("已完成", lambda: self._set_filter("done"), None),
+            ("逾期", lambda: self._set_filter("overdue"), None),
+        ], x, y, width=120)
+
+    def _set_filter(self, key: str) -> None:
+        self.filter = key
+        names = {"all": "全部", "todo": "待办", "doing": "进行中",
+                 "done": "已完成", "overdue": "逾期"}
+        try:
+            self._filter_pill._set(names.get(key, "全部"))
+        except Exception:
+            pass
+        self.refresh()
+
+    def _more_menu(self, t: dict, cv) -> None:
+        x, y = self._menu_at(cv)
+        self._popup([
+            ("编辑任务", lambda: self.edit_task(t), None),
+            ("延期到明天", lambda: self._defer_to(t, 1), None),
+            ("延期到后天", lambda: self._defer_to(t, 2), None),
+            ("延期到下周", lambda: self._defer_to(t, 7), None),
+            ("删除任务", lambda: self._delete_task(t), DANGER),
+        ], x, y)
+
+    def _defer_menu(self, t: dict, cv) -> None:
+        x, y = self._menu_at(cv)
+        self._popup([
+            ("今天（取消延期）", lambda: self._defer_to(t, 0), None),
+            ("明天", lambda: self._defer_to(t, 1), None),
+            ("后天", lambda: self._defer_to(t, 2), None),
+            ("下周", lambda: self._defer_to(t, 7), None),
+        ], x, y)
+
+    def _defer_to(self, t: dict, days: int) -> None:
+        base = self.view_day
+        if days <= 0:
+            t["defer_from"] = ""
+            t["defer_to"] = ""
+            if t.get("kind") == "once":
+                t["date"] = st.iso(base)
+            msg = "已取消延期"
+        else:
+            st.defer_task(t, days, base)
+            target = base + timedelta(days=days)
+            msg = f"已延到 {target.month}/{target.day}"
+        t["updated_at"] = st.now_iso()
+        self.store.save()
+        self.refresh()
+        self.show_banner(f"「{t['title'][:12]}」{msg}", strong=False)
+
+    def _delete_task(self, t: dict) -> None:
+        if not messagebox.askyesno("删除任务", f"确定删除「{t['title']}」？\n（只影响提示器，不会改你的任务表文件）"):
+            return
+        try:
+            self.store.tasks.remove(t)
+            self.store.save()
+        except Exception:
+            pass
+        self.refresh()
 
     def _title_for(self, t: dict, day) -> str:
         """明日视图显示「下一条」：推进型按 step 往后推一段（17–20 → 21–24）。"""
@@ -887,47 +1017,71 @@ class App:
 
     # -- 计时
     def _is_timing(self, t: dict) -> bool:
-        return bool(self.timer_task and self.timer_task.get("id") == t.get("id"))
+        return st.timer_running(t)
 
     def toggle_timer(self, t: dict) -> None:
-        if self._is_timing(t):
-            self.stop_timer()
+        """开始 / 暂停计时；同一时间只允许一个任务在计时。"""
+        if st.timer_running(t):
+            st.pause_timer(t)
+            self.timer_task = None
+            self.timer_start = None
+            self.lbl_timer.configure(text="")
         else:
-            self.stop_timer()
+            for o in self.store.tasks:
+                if o is not t and st.timer_running(o):
+                    st.pause_timer(o)
+            st.start_timer(t)
             self.timer_task = t
             self.timer_start = datetime.now()
-            self.refresh()
+        self.store.save()
+        self.refresh()
 
     def stop_timer(self) -> None:
-        if not self.timer_task or not self.timer_start:
-            return
-        hours = (datetime.now() - self.timer_start).total_seconds() / 3600.0
-        tid = self.timer_task.get("id")
-        self.timer_task = None
-        self.timer_start = None
-        self.lbl_timer.configure(text="")
-        if hours >= 1 / 60:
-            self.store.add_spent(tid, hours)
-        self.refresh()
+        if self.timer_task is not None:
+            st.pause_timer(self.timer_task)
+            self.timer_task = None
+            self.timer_start = None
+            self.store.save()
+            try:
+                self.lbl_timer.configure(text="")
+            except Exception:
+                pass
+            self.refresh()
+
+    def _restore_timer(self) -> None:
+        """启动时把上次没停的计时收尾（只算到最后一个心跳）。"""
+        for t in self.store.tasks:
+            if st.timer_running(t):
+                st.restore_timer(t)
+        self.store.save()
 
     def _update_timer_label(self) -> None:
         if not self.timer_start:
             return
         sec = int((datetime.now() - self.timer_start).total_seconds())
-        self.lbl_timer.configure(text=f"计时 {sec // 60:02d}:{sec % 60:02d} ■")
-
-    # ------------------------------------------------------------ 提醒引擎
-    def _in_quiet(self, now: datetime) -> bool:
         try:
-            qs, qe = (self.s.get("quiet_hours") or ["23:30", "07:00"])[:2]
-            t1 = datetime.strptime(qs, "%H:%M").time()
-            t2 = datetime.strptime(qe, "%H:%M").time()
+            self.lbl_timer.configure(text=f"计时 {sec // 60:02d}:{sec % 60:02d} ■")
         except Exception:
-            return False
-        t = now.time()
-        return (t >= t1 or t <= t2) if t1 > t2 else (t1 <= t <= t2)
+            pass
+        # 卡片上的「实际」也每秒跟着走
+        cv = getattr(self, "_timer_cv", None)
+        if cv is not None:
+            try:
+                if cv.winfo_exists() and getattr(cv, "_task", None) is self.timer_task:
+                    cv.itemconfigure(cv._meta_id,
+                                     text=self._meta_text(cv._task, False, self.view_day))
+            except Exception:
+                pass
 
     def _tick(self) -> None:
+        if self.timer_task is not None:
+            self._beat_n = (getattr(self, "_beat_n", 0) + 1) % 60
+            if self._beat_n == 0:
+                try:
+                    st.beat_timer(self.timer_task)
+                    self.store.save()
+                except Exception:
+                    pass
         try:
             self._rollover()
             self._update_timer_label()
