@@ -97,6 +97,7 @@ DEFAULT_SETTINGS = {
     "theme_accent": "#4A90D9",  # 主题色（影响强调色与界面色调）
     "bg_photo": "",            # 背景照片路径（空 = 不用）
     "bg_alpha": 0.0,           # 背景照片透明度 0–1（越高照片越明显）
+    "custom_colors": [],      # 用户保存的自定义主题色
 }
 
 

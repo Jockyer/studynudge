@@ -43,7 +43,7 @@ DANGER = "#E05252"
 OK = "#4CAF7D"
 FONT = "Microsoft YaHei UI"
 SZ = 1
-VERSION = "1.2.4"                      # 全局字号偏移（用户要求大一号）
+VERSION = "1.2.5"                      # 全局字号偏移（用户要求大一号）
 WK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 PYW = su.pythonw()
 LOG_PATH = paths.data_dir() / "studynudge.log"
@@ -1588,13 +1588,24 @@ class App:
             pass
 
     def _set_accent(self, hexv: str) -> None:
-        self.s["theme_accent"] = (hexv or "").upper()
+        self.s["theme_accent"] = hexv
         self.store.save()
-        self._apply_theme()
-        try:
-            self._refresh_tray()
-        except Exception:
-            pass
+        page = getattr(self, "_settings_page", "general")
+        win = getattr(self, "_settings_win", None)
+        was_open = bool(win is not None and win.winfo_exists())
+        self._apply_theme()            # 重建主窗（会跳过 Toplevel）
+        self._refresh_tray()
+        if was_open:                   # 子窗口不跟着变，只能重建一次
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._settings_win = None
+            self.settings_dialog()
+            try:
+                self._settings_show(page)
+            except Exception:
+                pass
 
     def _pick_accent(self) -> None:
         from tkinter import colorchooser
@@ -1889,9 +1900,101 @@ class App:
             return
         self.quit_app()
 
+    def _color_popup(self) -> None:
+        """下拉色板：12 色相 × 6 明度 + 灰阶，可保存为自定义色。"""
+        import colorsys
+
+        d = tk.Toplevel(self.root)
+        d.overrideredirect(True)
+        d.configure(bg=th.mix(BG2, FG, 0.22))
+        d.attributes("-topmost", True)
+        box = tk.Frame(d, bg=BG2)
+        box.pack(fill="both", expand=True, padx=1, pady=1)
+
+        sel = {"hex": (self.s.get("theme_accent") or th.DEFAULT_ACCENT).upper()}
+
+        grid = tk.Frame(box, bg=BG2)
+        grid.pack(padx=10, pady=(10, 4))
+        for row in range(6):
+            for col in range(12):
+                hue = col / 12.0
+                sat = 1.0 - row * 0.13
+                val = 1.0 if row < 3 else 1.0 - (row - 2) * 0.16
+                r, g, b = colorsys.hsv_to_rgb(hue, max(0.2, sat), max(0.25, val))
+                hexv = "#%02X%02X%02X" % (int(r * 255), int(g * 255), int(b * 255))
+                c = tk.Canvas(grid, width=17, height=17, bg=hexv, highlightthickness=0,
+                              bd=0, cursor="hand2")
+                c.grid(row=row, column=col, padx=1, pady=1)
+                c.bind("<Button-1>", lambda e, h=hexv: pick(h))
+
+        grays = tk.Frame(box, bg=BG2)
+        grays.pack(padx=10, pady=(0, 8))
+        for i in range(10):
+            v = int(40 + (215 * i / 9))
+            hexv = "#%02X%02X%02X" % (v, v, v)
+            c = tk.Canvas(grays, width=17, height=17, bg=hexv, highlightthickness=0,
+                          bd=0, cursor="hand2")
+            c.pack(side="left", padx=1)
+            c.bind("<Button-1>", lambda e, h=hexv: pick(h))
+
+        foot = tk.Frame(box, bg=BG2)
+        foot.pack(fill="x", padx=10, pady=(0, 10))
+        prev = tk.Canvas(foot, width=26, height=22, highlightthickness=1,
+                         highlightbackground=th.mix(BG2, FG, 0.3), bd=0)
+        prev.pack(side="left")
+        lab = tk.Label(foot, text="", bg=BG2, fg=DIM, font=(FONT, 8 + SZ))
+        lab.pack(side="left", padx=(8, 0))
+
+        def pick(hexv):
+            sel["hex"] = hexv.upper()
+            try:
+                prev.configure(bg=sel["hex"])
+                lab.configure(text=sel["hex"])
+            except Exception:
+                pass
+
+        pick(sel["hex"])
+
+        btns = tk.Frame(box, bg=BG2)
+        btns.pack(fill="x", padx=10, pady=(0, 10))
+        self.pill(btns, "应用", lambda: (self._set_accent(sel["hex"]), d.destroy()),
+                  kind="primary").pack(side="right")
+        self.pill(btns, "存为自定义", lambda: (self._add_custom_color(sel["hex"]),
+                                          d.destroy())).pack(side="right", padx=6)
+
+        try:
+            d.update_idletasks()
+            w = box.winfo_reqwidth() + 2
+            h = box.winfo_reqheight() + 2
+            px, py = self.root.winfo_pointerxy()
+            x = max(4, min(px - 20, d.winfo_screenwidth() - w - 8))
+            y = max(4, min(py + 12, d.winfo_screenheight() - h - 40))
+            d.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            d.geometry(f"260x300+200+200")
+        d.bind("<Escape>", lambda e: d.destroy())
+        d.bind("<FocusOut>", lambda e: d.destroy())
+        d.focus_force()
+
+    def _add_custom_color(self, hexv: str) -> None:
+        hexv = (hexv or "").upper()
+        if not hexv.startswith("#") or len(hexv) != 7:
+            return
+        lst = [c for c in (self.s.get("custom_colors") or []) if isinstance(c, str)]
+        lst = [c for c in lst if c.upper() != hexv]
+        lst.insert(0, hexv)
+        self.s["custom_colors"] = lst[:12]
+        self.store.save()
+        self._set_accent(hexv)
+
     def settings_dialog(self) -> None:
         """侧栏 + 详情：常规 / 提醒 / 任务 / 外观（沿用主窗的视觉语言）。"""
         d = self._dlg("设置", 760, 540)
+        self._settings_win = d
+        try:
+            d.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, "_settings_win", None), d.destroy()))
+        except Exception:
+            pass
 
         top = tk.Frame(d, bg=BG)
         top.pack(fill="x", padx=18, pady=(14, 10))
@@ -1967,6 +2070,7 @@ class App:
 
         def show(key):
             state["cur"] = key
+            self._settings_page = key
             for f in pages.values():
                 f.pack_forget()
             pages[key].pack(fill="both", expand=True)
@@ -2082,7 +2186,20 @@ class App:
                           relief=("sunken" if hexv.upper() == cur else "flat"),
                           command=lambda h=hexv: self._set_accent(h))
             b.pack(side="left", padx=3)
-        self.pill(sw, "自定义…", self._pick_accent).pack(side="left", padx=(10, 0))
+        self.pill(sw, "自定义 ▾", self._color_popup).pack(side="left", padx=(10, 0))
+
+        customs = [c for c in (self.s.get("custom_colors") or []) if isinstance(c, str)]
+        if customs:
+            cr = tk.Frame(p, bg=BG)
+            cr.pack(fill="x", pady=(0, 10))
+            tk.Label(cr, text="自定义", bg=BG, fg=th.mix(FG, BG, 0.5),
+                     font=(FONT, 8 + SZ)).pack(side="left", padx=(0, 8))
+            for hexv in customs[:12]:
+                b = tk.Button(cr, text="", bg=hexv, activebackground=hexv, bd=0,
+                              width=3, height=1, cursor="hand2",
+                              relief=("sunken" if hexv.upper() == cur else "flat"),
+                              command=lambda h=hexv: self._set_accent(h))
+                b.pack(side="left", padx=3)
 
         section(p, "背景照片")
         r = row(p, "照片", self.s.get("bg_photo") or "（未选择）")
