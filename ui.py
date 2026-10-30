@@ -36,7 +36,7 @@ DANGER = "#E05252"
 OK = "#4CAF7D"
 FONT = "Microsoft YaHei UI"
 SZ = 1
-VERSION = "1.0"                      # 全局字号偏移（用户要求大一号）
+VERSION = "1.2.3"                      # 全局字号偏移（用户要求大一号）
 WK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 PYW = su.pythonw()
 LOG_PATH = paths.data_dir() / "studynudge.log"
@@ -526,6 +526,12 @@ class App:
     def on_close(self) -> None:
         """点 ×：按设置收到托盘或贴边条。"""
         self.collapse()
+
+    def open_data_dir(self) -> None:
+        try:
+            os.startfile(str(self.store.path.parent))
+        except Exception:
+            pass
 
     def quit_app(self) -> None:
         """退出：先收托盘再销毁窗口。"""
@@ -1756,74 +1762,200 @@ class App:
         self.show_banner(f"学科已更新（{len(items)} 个）", strong=False)
 
     def settings_dialog(self) -> None:
-        d = self._dlg("设置", 440, 440)
-        pad = tk.Frame(d, bg=BG, padx=14, pady=12)
-        pad.pack(fill="both", expand=True)
-        e_int = tk.Entry(pad, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
-                         highlightthickness=0, width=8)
-        self._lab(pad, "提醒间隔(分钟)", 0)
-        e_int.grid(row=0, column=1, sticky="w", pady=3, ipady=4)
-        e_int.insert(0, str(self.s.get("remind_interval_min", 30)))
-        self._lab(pad, "免打扰 起/止", 1)
-        qf = tk.Frame(pad, bg=BG)
-        qf.grid(row=1, column=1, sticky="w", pady=3)
-        e_q1 = tk.Entry(qf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
-                        highlightthickness=0, width=8)
-        e_q1.pack(side="left")
-        tk.Label(qf, text=" ~ ", bg=BG, fg=DIM, font=(FONT, 9 + SZ)).pack(side="left")
-        e_q2 = tk.Entry(qf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 10 + SZ),
-                        highlightthickness=0, width=8)
-        e_q2.pack(side="left")
-        qh = self.s.get("quiet_hours") or ["23:30", "07:00"]
-        e_q1.insert(0, qh[0])
-        e_q2.insert(0, qh[1])
+        """侧栏 + 详情：常规 / 提醒 / 任务 / 外观（沿用主窗的视觉语言）。"""
+        d = self._dlg("设置", 760, 540)
 
+        top = tk.Frame(d, bg=BG)
+        top.pack(fill="x", padx=18, pady=(14, 10))
+        tk.Label(top, text="设置", bg=BG, fg=FG,
+                 font=(FONT, 15 + SZ, "bold")).pack(side="left")
+        self.pill(top, "关闭", d.destroy).pack(side="right")
+
+        body = tk.Frame(d, bg=BG)
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 4))
+
+        side = tk.Frame(body, bg=BG2, width=146)
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+        main = tk.Frame(body, bg=BG)
+        main.pack(side="left", fill="both", expand=True, padx=(18, 0))
+
+        # ---------------- 变量 ----------------
         v_sound = tk.IntVar(value=1 if self.s.get("sound_on", True) else 0)
         v_panel = tk.IntVar(value=1 if self.s.get("startup_panel", True) else 0)
         v_top = tk.IntVar(value=1 if self.s.get("topmost", True) else 0)
         v_tray = tk.IntVar(value=1 if self.s.get("tray", True) else 0)
         v_auto = tk.IntVar(value=1 if su.is_enabled() else 0)
         v_dnd = tk.IntVar(value=1 if self.s.get("dnd_fullscreen", True) else 0)
-        row = 2
-        for v, txt in ((v_sound, "提醒时播放系统提示音"),
-                       (v_panel, "启动时显示今日总览"),
-                       (v_top, "窗口始终置顶"),
-                       (v_tray, "点 × 收到系统托盘（否则贴边条）"),
-                       (v_dnd, "全屏（游戏/视频）时勿扰，退出后补提醒"),
-                       (v_auto, "开机自启动（登录后自动运行）")):
-            tk.Checkbutton(pad, text=txt, variable=v, bg=BG, fg=FG, selectcolor=BG3,
-                           activebackground=BG, activeforeground=ACCENT, bd=0,
-                           highlightthickness=0, font=(FONT, 9 + SZ), anchor="w"
-                           ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
-            row += 1
 
-        self._lab(pad, "进度文件", row)
-        pf = tk.Frame(pad, bg=BG)
-        pf.grid(row=row, column=1, sticky="w", pady=3)
-        e_pmd = tk.Entry(pf, bg=BG3, fg=FG, insertbackground=FG, bd=0, font=(FONT, 8 + SZ),
-                         highlightthickness=0, width=28)
-        e_pmd.pack(side="left", ipady=3)
+        # ---------------- 小控件 ----------------
+        def check(parent, var):
+            cv = tk.Canvas(parent, width=20, height=20, bg=BG, highlightthickness=0, bd=0,
+                           cursor="hand2")
+
+            def draw():
+                cv.delete("all")
+                on = bool(var.get())
+                cv.create_polygon(_rr(1, 1, 19, 19, 5), smooth=True,
+                                  fill=(ACCENT if on else th.mix(BG2, FG, 0.08)),
+                                  outline=(ACCENT if on else th.mix(FG, BG, 0.45)), width=2)
+                if on:
+                    cv.create_line(6, 10, 9, 14, 15, 6, fill="#FFFFFF", width=2)
+
+            def toggle(_e=None):
+                var.set(0 if var.get() else 1)
+                draw()
+
+            cv.bind("<Button-1>", toggle)
+            cv._draw = draw
+            draw()
+            return cv
+
+        def row(parent, title, hint=""):
+            f = tk.Frame(parent, bg=BG)
+            f.pack(fill="x", pady=(0, 10))
+            left = tk.Frame(f, bg=BG)
+            left.pack(side="left", fill="x", expand=True)
+            tk.Label(left, text=title, bg=BG, fg=FG, anchor="w",
+                     font=(FONT, 10 + SZ)).pack(fill="x")
+            if hint:
+                tk.Label(left, text=hint, bg=BG, fg=th.mix(FG, BG, 0.5), anchor="w",
+                         font=(FONT, 8 + SZ)).pack(fill="x")
+            return f
+
+        def section(parent, text):
+            tk.Label(parent, text=text, bg=BG, fg=ACCENT, anchor="w",
+                     font=(FONT, 9 + SZ, "bold")).pack(fill="x", pady=(2, 8))
+
+        def entry(parent, value, width=10):
+            e = tk.Entry(parent, width=width, bg=BG3, fg=FG, bd=0, insertbackground=FG,
+                         font=(FONT, 9 + SZ), highlightthickness=0)
+            e.insert(0, value)
+            e.pack(side="right", ipady=4)
+            return e
+
+        pages, nav = {}, {}
+        state = {"cur": "general"}
+
+        def show(key):
+            state["cur"] = key
+            for f in pages.values():
+                f.pack_forget()
+            pages[key].pack(fill="both", expand=True)
+            for k, (cv, draw) in nav.items():
+                draw(k == key)
+
+        def nav_item(key, label):
+            cv = tk.Canvas(side, height=36, bg=BG2, highlightthickness=0, bd=0, cursor="hand2")
+            cv.pack(fill="x", padx=8, pady=2)
+
+            def draw(active=False):
+                w = max(60, cv.winfo_width())
+                cv.delete("all")
+                if active:
+                    cv.create_polygon(_rr(1, 1, w - 1, 35, 10), smooth=True,
+                                      fill=th.mix(BG2, ACCENT, 0.24), outline="")
+                cv.create_text(16, 18, text=label, anchor="w",
+                               fill=(ACCENT if active else th.mix(FG, BG2, 0.32)),
+                               font=(FONT, 10 + SZ, "bold" if active else "normal"))
+
+            cv.bind("<Button-1>", lambda e, k=key: show(k))
+            cv.bind("<Configure>", lambda e, k=key: draw(state["cur"] == k))
+            nav[key] = (cv, draw)
+            return cv
+
+        for key, label in (("general", "常规"), ("remind", "提醒"),
+                           ("task", "任务"), ("look", "外观")):
+            pages[key] = tk.Frame(main, bg=BG)
+            nav_item(key, label)
+
+        # ---------------- 常规 ----------------
+        p = pages["general"]
+        section(p, "启动与窗口")
+        r = row(p, "启动时显示今日总览", "开机后先弹出今天的清单")
+        check(r, v_panel).pack(side="right")
+        for var, title, hint in (
+                (v_top, "窗口始终置顶", "其它窗口不会盖住提示器"),
+                (v_tray, "点 × 收到系统托盘", "关掉后点 × 变成贴边小条"),
+                (v_auto, "开机自启动", "登录 Windows 后自动运行")):
+            r = row(p, title, hint)
+            check(r, var).pack(side="right")
+
+        section(p, "关于")
+        r = row(p, "StudyNudge v" + VERSION, "数据：" + str(self.store.path.parent))
+        self.pill(r, "打开", self.open_data_dir).pack(side="right")
+        r = row(p, "退出程序", "从托盘和内存中彻底退出")
+        self.pill(r, "退出", self.quit_app).pack(side="right")
+
+        # ---------------- 提醒 ----------------
+        p = pages["remind"]
+        section(p, "提醒节奏")
+        r = row(p, "提醒间隔", "还有未完成任务时，每隔多久提醒一次")
+        tk.Label(r, text="分钟", bg=BG, fg=th.mix(FG, BG, 0.5),
+                 font=(FONT, 9 + SZ)).pack(side="right", padx=(8, 0))
+        e_int = entry(r, str(self.s.get("remind_interval_min", 30)), 6)
+
+        r = row(p, "免打扰时段", "这段时间内不弹提醒（HH:MM）")
+        qh = self.s.get("quiet_hours") or ["23:30", "07:00"]
+        e_q2 = entry(r, qh[1], 7)
+        tk.Label(r, text="→", bg=BG, fg=DIM, font=(FONT, 9 + SZ)).pack(side="right", padx=4)
+        e_q1 = entry(r, qh[0], 7)
+
+        section(p, "打扰控制")
+        r = row(p, "提醒时播放提示音", "系统提示音，不会很吵")
+        check(r, v_sound).pack(side="right")
+        r = row(p, "全屏（游戏/视频）时勿扰", "退出全屏后补提醒")
+        check(r, v_dnd).pack(side="right")
+
+        # ---------------- 任务 ----------------
+        p = pages["task"]
+        section(p, "任务列表文件")
+        r = row(p, "进度文件", "提示器只读这个文件里的「当前执行」小节")
+        e_pmd = tk.Entry(r, bg=BG3, fg=FG, bd=0, insertbackground=FG,
+                         font=(FONT, 8 + SZ), highlightthickness=0, width=32)
         e_pmd.insert(0, str(self.s.get("progress_md") or ""))
-        btn(pf, "↻ 同步", lambda: self._sync_from(e_pmd.get()), width=6, pad=3).pack(
-            side="left", padx=(4, 0))
-        btn(pf, "…", lambda: self._pick_task_file(e_pmd), width=2, pad=3).pack(
-            side="left", padx=(2, 0))
-        row += 1
-        btn(pad, "外观与背景…", self.appearance_dialog, bg=BG3, fg=FG, width=12,
-            pad=4).grid(row=row, column=1, sticky="w", pady=(8, 0))
-        row += 1
-        btn(pad, "学科与颜色…", self.subjects_dialog, bg=BG3, fg=FG, width=12,
-            pad=4).grid(row=row, column=1, sticky="w", pady=(6, 0))
-        row += 1
+        e_pmd.pack(side="right", ipady=4)
+        r2 = tk.Frame(p, bg=BG)
+        r2.pack(fill="x", pady=(0, 10))
+        self.pill(r2, "立即同步", lambda: self._sync_from(e_pmd.get())).pack(side="right")
+        self.pill(r2, "选择文件…", lambda: self._pick_task_file(e_pmd)).pack(
+            side="right", padx=6)
 
-        info = tk.Label(pad, text=f"StudyNudge v{VERSION} · 数据：{self.store.path}", bg=BG, fg=DIM,
-                        font=(FONT, 8 + SZ), anchor="w", wraplength=380, justify="left")
-        info.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        row += 1
-        note = tk.Label(pad, text="", bg=BG, fg=OK, font=(FONT, 8 + SZ), anchor="w",
-                        wraplength=380, justify="left")
-        note.grid(row=row, column=0, columnspan=2, sticky="w")
-        pad.columnconfigure(1, weight=1)
+        section(p, "学科")
+        r = row(p, "学科与颜色", "增删改学科 key / 名称 / 学科线颜色")
+        self.pill(r, "编辑…", self.subjects_dialog).pack(side="right")
+
+        # ---------------- 外观 ----------------
+        p = pages["look"]
+        section(p, "主题色")
+        sw = tk.Frame(p, bg=BG)
+        sw.pack(fill="x", pady=(0, 10))
+        cur = (self.s.get("theme_accent") or th.DEFAULT_ACCENT).upper()
+        for name, hexv in th.PRESETS:
+            b = tk.Button(sw, text="", bg=hexv, activebackground=hexv, bd=0, width=3,
+                          height=1, cursor="hand2",
+                          relief=("sunken" if hexv.upper() == cur else "flat"),
+                          command=lambda h=hexv: self._set_accent(h))
+            b.pack(side="left", padx=3)
+        self.pill(sw, "自定义…", self._pick_accent).pack(side="left", padx=(10, 0))
+
+        section(p, "背景照片")
+        r = row(p, "照片", self.s.get("bg_photo") or "（未选择）")
+        self.pill(r, "清除", self._clear_photo).pack(side="right")
+        self.pill(r, "选择…", self._pick_photo).pack(side="right", padx=6)
+
+        r = row(p, "透明度", "越高照片越明显，同时影响卡片与顶栏")
+        v_alpha = tk.IntVar(value=int(round(float(self.s.get("bg_alpha", 0) or 0) * 100)))
+        tk.Scale(r, from_=0, to=100, orient="horizontal", variable=v_alpha,
+                 bg=BG, fg=FG, troughcolor=BG3, highlightthickness=0, bd=0,
+                 length=180, showvalue=True,
+                 command=lambda v: self._set_alpha(int(float(v)) / 100)).pack(side="right")
+
+        # ---------------- 底部 ----------------
+        bf = tk.Frame(d, bg=BG)
+        bf.pack(fill="x", padx=18, pady=(0, 14))
+        note = tk.Label(bf, text="", bg=BG, fg=OK, anchor="w", font=(FONT, 8 + SZ))
+        note.pack(side="left")
 
         def save():
             try:
@@ -1855,7 +1987,7 @@ class App:
                 self.tray_on = True
                 self._start_tray()
                 msgs.append("已启用托盘" if self.tray else
-                            ("托盘不可用（未装 pystray）：" + tray_mod.IMPORT_ERR
+                            ("托盘不可用：" + tray_mod.IMPORT_ERR
                              if not tray_mod.AVAILABLE else "托盘启动失败"))
             elif not v_tray.get() and self.tray is not None:
                 try:
@@ -1874,16 +2006,12 @@ class App:
             note.configure(text="；".join(msgs) or "已保存")
             self.last_remind = datetime.now()
 
-        bf = tk.Frame(pad, bg=BG)
-        bf.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        btn(bf, "保存", save, bg=ACCENT, fg="#FFFFFF", width=8).pack(side="right", padx=(6, 0))
-        btn(bf, "关闭", d.destroy, width=6).pack(side="right")
-        btn(bf, "打开数据文件夹", lambda: subprocess.Popen(
-            ["explorer", str(self.store.path.parent)]), width=14).pack(side="left")
-        btn(bf, "退出程序", lambda: (d.destroy(), self.quit_app()), bg="#3A2226",
-            fg=DANGER, width=8).pack(side="left", padx=(6, 0))
+        self.pill(bf, "保存", save, kind="primary").pack(side="right")
+        self.pill(bf, "取消", d.destroy).pack(side="right", padx=8)
 
-    # ------------------------------------------------------------ 本周俯瞰
+        self._settings_show = show
+        show("general")
+
     def _week_sub(self, t: dict, tdy: date) -> str:
         """推进型任务在本周俯瞰里的副标题：本周还能推到哪。"""
         step = int(t.get("step") or 0)
